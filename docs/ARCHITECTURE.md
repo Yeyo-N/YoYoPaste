@@ -17,6 +17,10 @@
 | D9 | Language | Go (desktop core), Swift (iOS) | Rust, C++, C# | Tailscale ships a first-party Go client library. Single static binary, trivial cross-compile, `net/http` is our transport. |
 | D10 | Build | Go modules + `goreleaser`; Xcode for iOS | CMake, Bazel, npm | One `.goreleaser.yaml` produces signed macOS universal + Windows binaries and a changelog. |
 
+| D11 | Participant discovery | On startup and on peer change, probe every same-user peer with `GET /v0/hello`; only responders are YoYoPaste devices | Broadcast to all tailnet peers | `tsnet.Peers` lists *every* device on the tailnet — routers, servers, phones without the app. Sending clipboard announcements to all of them means a failed HTTP call and an outbox row per non-participant, per copy. `/v0/hello` already exists for exactly this and was never called. |
+| D12 | Mobile discovery | Mobile clients cannot read Tailscale's LocalAPI. They fetch the roster from a desktop peer via `GET /v0/peers`, bootstrapped once from one address | LocalAPI on mobile; mDNS; a coordination server | The Tailscale iOS/Android apps do not expose LocalAPI to other apps, so `tsnet.Peers` is desktop-only. A desktop already has the roster; serving it is one endpoint. Mobile needs exactly one address to start, shown as a QR code in the desktop UI. |
+| D13 | Mobile clipboard posture | iOS and Android are **foreground and share-sheet only**. No background clipboard monitoring. | A background clipboard service | Android 10+ blocks background clipboard reads outright, and iOS offers no pasteboard change event in the background. This is a platform limit, not a design preference — auto-sync is a desktop-only capability and the UI must say so rather than appear broken. |
+
 ### Consequences
 - **No central server, ever.** There is no code path that talks to a host we do not own.
 - The daemon **refuses to listen on `0.0.0.0`**. It binds only the Tailscale IP (peers) and `127.0.0.1` (local UI). Off-tailnet traffic is unreachable, not merely rejected.
@@ -29,7 +33,8 @@ Peer listener: **Tailscale IP only**, TCP **8383**. Local UI listener: **`127.0.
 Every inbound peer request is authenticated by `WhoIs(RemoteAddr)`; a caller outside the tailnet or belonging to another user gets `403` and is logged once.
 
 ```
-GET  /v0/hello                 -> 200 {"id","name","os","version"}
+GET  /v0/hello                 -> 200 {"id","name","os","version"}   participation probe
+GET  /v0/peers                 -> 200 [{id,name,os,ip,online,last_sync}]  roster, for mobile clients
 POST /v0/clip                  -> 204   announce a clipboard item
 GET  /v0/events                -> 200 text/event-stream  (announcements to this peer)
 GET  /v0/blob/{id}             -> 200/206 payload, honours Range:

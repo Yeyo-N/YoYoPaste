@@ -606,6 +606,172 @@ successfully executed, so its output is entirely unknown.
 
 ---
 
+# Phase 2.7 — Reopened from verification
+
+### YYP-042b · `go vet` still fails on Windows
+**P0 · S · Ready · deps: none · skills: Go**
+
+`GOOS=windows go build ./...` now passes — the lazy-proc rewrite is correct and
+YYP-042's main body is done. But `GOOS=windows go vet ./...` still exits 1 with
+two `possible misuse of unsafe.Pointer` at `clip_windows.go:111` and `:158`, so
+the Windows CI job stays red. The `//nolint:govet` comments added there do
+nothing: `nolint` is a golangci-lint directive and has no effect on `go vet`.
+
+**Master-node decision:** do not contort the code. `unsafeptr` is a false
+positive here — `GlobalAlloc` memory is not on the Go heap, so the GC cannot
+move it, and this uintptr→pointer pattern is what every Win32 clipboard
+implementation uses. Contorting around a check that is wrong in this context
+adds risk for no safety.
+
+**Fix** Drop the useless `//nolint:govet` comments. In `ci.yml`, replace the
+blanket `go vet ./...` with a run that disables only `unsafeptr` only for
+`internal/clip` — every other package and every other check stays strict.
+Add a comment in `clip_windows.go` explaining why the pattern is safe.
+**Acceptance** All three CI jobs green. `go vet` still catches an unsafeptr
+misuse introduced anywhere outside `internal/clip`.
+
+---
+
+### YYP-043 · Reopened — not started
+**P0 · S · Ready · deps: none · skills: GitHub Actions**
+
+Reported complete, but `.github/workflows/ci.yml` is unchanged (`version: latest`,
+`go-version: "1.27"`) and `go.mod` still says `go 1.26.6`. The linter has still
+never executed on any platform. See the original YYP-043 above for the two
+candidate fixes.
+
+**Acceptance** A CI log showing golangci-lint actually running and reporting.
+
+---
+
+### YYP-041b · Deploy to Windows and paste for real
+**P1 · M · Ready · deps: 042b · skills: manual testing**
+
+`docs/VERIFY_041.md` is good work and honest about its gaps — real-tailnet
+`SelfIP`, `Peers` same-user filtering, and `WhoIs` (including `8.8.8.8` correctly
+rejected as 403 rather than "unavailable") are all verified against the live
+tailnet. That part is done.
+
+Not done: `yoyopasted` has never run on `vista`, so no clipboard has ever
+crossed between two machines. The `<100 ms` figure is loopback plus an inference
+from `tailscale ping`, not a measurement.
+
+**Fix** Build the Windows binary, run it on `vista`, copy text on the Mac, paste
+in Notepad. Then the reverse. Record the actual observed latency.
+**Acceptance** A round trip in both directions, with a real measured number.
+
+---
+
+# Phase 2.8 — Device roster (new requirement)
+
+The app must recognise every Tailscale device — IP, OS, and state — at startup.
+Today `tsnet.Peers` is called ad hoc on each `/api/state` poll and each copy, and
+nothing ever distinguishes a device running YoYoPaste from any other tailnet node.
+
+### YYP-044 · Participation probe at startup
+**P0 · L · Ready · deps: none · skills: Go**
+
+`/v0/hello` is served but **never called by anything** (D11). So `handleWatcherItem`
+broadcasts every copy to every online tailnet peer — routers, servers, phones
+without the app. Each one fails, and each failure writes an outbox row that is
+retried every 10 s until it hits 20 attempts. Every copy pollutes the queue.
+
+Build `internal/roster`: enumerate peers via `tsnet.Peers` once at startup, probe
+each with `GET /v0/hello` (2 s timeout, in parallel), and cache the result —
+IP, OS, hostname, app version, participating yes/no, last successful sync.
+Refresh on a 30 s ticker and on LocalAPI peer changes.
+
+**Acceptance** Broadcast targets only probed participants. A tailnet with 20
+devices and 2 running YoYoPaste produces 2 sends and 0 outbox rows per copy.
+The roster survives a peer going offline and returning.
+**Test** Table-driven against stub peers where only some answer `/v0/hello`.
+**Ponytail** One map behind one mutex, refreshed by one ticker. No service
+registry, no dependency injection.
+
+---
+
+### YYP-045 · Serve the roster to mobile clients
+**P1 · M · Ready · deps: 044 · skills: Go**
+
+Add `GET /v0/peers` (D12) returning the cached roster. Mobile clients cannot read
+Tailscale's LocalAPI, so a desktop peer is their only way to learn who exists.
+
+**Acceptance** Returns the roster as specified in ARCHITECTURE.md §2, behind the
+same `authTailnet` middleware as everything else.
+
+---
+
+### YYP-046 · Wire the roster into the UI
+**P1 · M · Ready · deps: 044 · skills: Go, HTML**
+
+`handleState` currently calls `tsnet.Peers` on every 2 s poll and reports
+Tailscale's `LastSeen` in the "last sync" column — which is when Tailscale last
+saw the device, not when YoYoPaste last synced with it. `selfName` is always
+empty, so the self row has no name.
+
+**Fix** Read from the roster cache. Show real last-sync time. Fill in the self
+row's hostname. Mark non-participating tailnet devices distinctly (greyed, "not
+installed") rather than listing them as if they were peers.
+**Acceptance** The table matches ARCHITECTURE.md §5, last-sync reflects actual
+syncs, and a device without YoYoPaste is visibly distinguished.
+
+---
+
+### YYP-047 · Mobile bootstrap QR in the desktop UI
+**P2 · M · Ready · deps: 045 · skills: Go, HTML**
+
+Mobile needs exactly one address to bootstrap from (D12). Show the desktop's own
+`100.x:8383` as a QR code in the local UI, revealed by one link — it must not
+clutter the default view.
+
+**Ponytail** Generate the QR client-side from a CDN-free vendored snippet, or
+serve an SVG from Go. Do not add a QR dependency for one 200-byte payload if a
+short encoder will do.
+
+---
+
+# Phase 5 — Mobile (iOS and Android)
+
+**Read D12 and D13 before starting either client.** Mobile cannot enumerate the
+tailnet and cannot watch the clipboard in the background. Both clients are
+foreground and share-sheet only. Auto-sync is a desktop capability; the mobile UI
+must say so plainly instead of appearing broken.
+
+`YYP-024` and `YYP-025` (iOS) are unchanged but now depend on **YYP-045**.
+
+### YYP-048 · Android client
+**P2 · L · Ready · deps: 045 · skills: Kotlin, Jetpack Compose**
+
+`android/` — Kotlin + Compose app speaking protocol v0 over the Tailscale Android
+app's VPN. Same four UI elements. Bootstraps from the QR in YYP-047, then reads
+the roster from `GET /v0/peers`.
+
+**Acceptance** Sees desktop peers, sends and receives text and files. No
+background service, no foreground-service notification, no battery drain.
+**Ponytail** `HttpURLConnection` or OkHttp — whichever is already on the Compose
+dependency tree. Native Kotlin client, no gomobile, no shared Go core (D8/D9).
+
+---
+
+### YYP-049 · Android share target
+**P2 · M · Ready · deps: 048 · skills: Kotlin**
+
+`ACTION_SEND` / `ACTION_SEND_MULTIPLE` intent filter for text, images and files.
+Stream from the content URI — never load the file into memory.
+
+**Acceptance** Sharing a photo from Google Photos lands it on a desktop peer.
+
+---
+
+### YYP-050 · Android clipboard limits, documented
+**P3 · S · Ready · deps: 048 · skills: Kotlin, docs**
+
+Android 10+ denies clipboard reads to apps without focus. State this in the README
+and show it in the app so the limitation reads as a platform constraint rather
+than a bug.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |

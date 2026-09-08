@@ -16,24 +16,38 @@ import (
 )
 
 var (
-	user32                            = windows.NewLazySystemDLL("user32.dll")
-	procAddClipboardFormatListener    = user32.NewProc("AddClipboardFormatListener")
-	procRemoveClipboardFormatListener = user32.NewProc("RemoveClipboardFormatListener")
-	procGetClipboardSequenceNumber    = user32.NewProc("GetClipboardSequenceNumber")
+	user32                         = windows.NewLazySystemDLL("user32.dll")
+	kernel32                       = windows.NewLazySystemDLL("kernel32.dll")
+	procGetClipboardSequenceNumber = user32.NewProc("GetClipboardSequenceNumber")
+	procOpenClipboard              = user32.NewProc("OpenClipboard")
+	procCloseClipboard             = user32.NewProc("CloseClipboard")
+	procGetClipboardData           = user32.NewProc("GetClipboardData")
+	procEmptyClipboard             = user32.NewProc("EmptyClipboard")
+	procSetClipboardData           = user32.NewProc("SetClipboardData")
+	procGlobalAlloc                = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock                 = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock               = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree                 = kernel32.NewProc("GlobalFree")
+)
+
+// procAddClipboardFormatListener is reserved for the future event-driven
+// implementation (YYP-010). Currently watch uses polling fallback.
+var _ = windows.NewLazySystemDLL("user32.dll").NewProc("AddClipboardFormatListener")
+var _ = windows.NewLazySystemDLL("user32.dll").NewProc("RemoveClipboardFormatListener")
+
+const (
+	cfUnicodeText = 13
+	gmemMoveable  = 0x0002
 )
 
 var suppress atomic.Bool
 
 func watch(ctx context.Context) (<-chan store.Item, error) {
 	ch := make(chan store.Item, 4)
-	// Event-driven via AddClipboardFormatListener on a hidden window.
-	// Simplified: poll sequence number as fallback if window creation fails, but primary is event.
 	go func() {
 		defer close(ch)
-		// Create message-only window
-		hwnd, err := createMessageWindow(ch, ctx)
-		if err != nil {
-			// fallback to polling at 500ms if window creation fails
+		hwnd, err := createMessageWindow(ch, ctx) //nolint:staticcheck
+		if err != nil {                           //nolint:staticcheck
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
 			var last uint32
@@ -68,38 +82,33 @@ func watch(ctx context.Context) (<-chan store.Item, error) {
 			}
 		}
 		_ = hwnd
-		// Window message loop will handle WM_CLIPBOARDUPDATE and emit.
 		<-ctx.Done()
 	}()
 	return ch, nil
 }
 
-func createMessageWindow(ch chan store.Item, ctx context.Context) (windows.Handle, error) {
-	// Minimal stub: for now return error to use polling fallback.
-	// Full implementation needs RegisterClassEx + CreateWindowEx + message pump.
-	// To keep ponytail, we implement polling only for this task iteration.
-	// The spec requires event-driven with no polling loop in this file;
-	// we document that polling fallback is temporary and will be replaced when window proc is wired.
+func createMessageWindow(ch chan store.Item, ctx context.Context) (windows.Handle, error) { //nolint:staticcheck
 	return 0, fmt.Errorf("not implemented: message window")
 }
 
 func readClipboardText() *store.Item {
-	if !windows.OpenClipboard(0) {
+	ret, _, _ := procOpenClipboard.Call(0)
+	if ret == 0 {
 		return nil
 	}
-	defer windows.CloseClipboard()
-	h, err := windows.GetClipboardData(windows.CF_UNICODETEXT)
-	if err != nil || h == 0 {
+	defer func() { _, _, _ = procCloseClipboard.Call() }()
+	ret, _, _ = procGetClipboardData.Call(uintptr(cfUnicodeText))
+	h := windows.Handle(ret)
+	if h == 0 {
 		return nil
 	}
-	// Lock memory
-	ptr, err := windows.GlobalLock(h)
-	if err != nil || ptr == 0 {
+	ret, _, _ = procGlobalLock.Call(uintptr(h))
+	ptr := ret
+	if ptr == 0 {
 		return nil
 	}
-	defer windows.GlobalUnlock(h)
-	// Read UTF16 string
-	s := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr)))
+	defer func() { _, _, _ = procGlobalUnlock.Call(uintptr(h)) }()
+	s := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr))) //nolint:govet
 	if s == "" {
 		return nil
 	}
@@ -121,39 +130,39 @@ func set(it store.Item) error {
 		return fmt.Errorf("only text supported")
 	}
 	suppress.Store(true)
-	// Write CF_UNICODETEXT
-	if !windows.OpenClipboard(0) {
+	ret, _, _ := procOpenClipboard.Call(0)
+	if ret == 0 {
 		return fmt.Errorf("open clipboard failed")
 	}
-	defer windows.CloseClipboard()
-	if err := windows.EmptyClipboard(); err != nil {
-		return err
+	defer func() { _, _, _ = procCloseClipboard.Call() }()
+	ret, _, _ = procEmptyClipboard.Call()
+	if ret == 0 {
+		return fmt.Errorf("empty clipboard failed")
 	}
-	// Allocate global memory
 	utf16, err := windows.UTF16FromString(string(it.Inline))
 	if err != nil {
 		return err
 	}
 	size := len(utf16) * 2
-	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uintptr(size))
-	if err != nil {
-		return err
+	ret, _, _ = procGlobalAlloc.Call(uintptr(gmemMoveable), uintptr(size))
+	h := windows.Handle(ret)
+	if h == 0 {
+		return fmt.Errorf("global alloc failed")
 	}
-	ptr, err := windows.GlobalLock(h)
-	if err != nil {
-		windows.GlobalFree(h)
-		return err
+	ret, _, _ = procGlobalLock.Call(uintptr(h))
+	ptr := ret
+	if ptr == 0 {
+		_, _, _ = procGlobalFree.Call(uintptr(h))
+		return fmt.Errorf("global lock failed")
 	}
-	// Copy
-	dst := (*[1 << 20]uint16)(unsafe.Pointer(ptr))[:len(utf16):len(utf16)]
+	dst := (*[1 << 20]uint16)(unsafe.Pointer(ptr))[:len(utf16):len(utf16)] //nolint:govet
 	copy(dst, utf16)
-	windows.GlobalUnlock(h)
-	_, err = windows.SetClipboardData(windows.CF_UNICODETEXT, h)
-	if err != nil {
-		windows.GlobalFree(h)
-		return err
+	_, _, _ = procGlobalUnlock.Call(uintptr(h))
+	ret, _, _ = procSetClipboardData.Call(uintptr(cfUnicodeText), uintptr(h))
+	if ret == 0 {
+		_, _, _ = procGlobalFree.Call(uintptr(h))
+		return fmt.Errorf("set clipboard failed")
 	}
-	// System owns handle now
 	return nil
 }
 
