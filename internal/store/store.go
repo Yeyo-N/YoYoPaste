@@ -26,8 +26,9 @@ type Item struct {
 
 // Store persists items and outbox.
 type Store struct {
-	db  *sql.DB
-	dir string
+	db       *sql.DB
+	dir      string
+	putCount int
 }
 
 // Open creates dir 0700, opens db file 0600, migrates.
@@ -48,12 +49,12 @@ func Open(dir string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	// Ensure file mode 0600
 	if err := os.Chmod(dbPath, 0600); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("chmod db: %w", err)
 	}
 	return &Store{db: db, dir: dir}, nil
@@ -69,7 +70,7 @@ func migrate(db *sql.DB) error {
 			size INTEGER NOT NULL,
 			sha256 TEXT NOT NULL,
 			origin TEXT NOT NULL,
-			created TEXT NOT NULL,
+			created INTEGER NOT NULL,
 			inline BLOB,
 			blob_path TEXT NOT NULL DEFAULT ''
 		);
@@ -90,6 +91,65 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// Migrate existing TEXT created to INTEGER if needed
+	var createdType string
+	err = db.QueryRow(`SELECT type FROM pragma_table_info('items') WHERE name='created'`).Scan(&createdType)
+	if err == nil && createdType == "TEXT" {
+		// Old DB with TEXT created - migrate to INTEGER
+		_, err = db.Exec(`
+			CREATE TABLE items_new(
+				id TEXT PRIMARY KEY,
+				kind TEXT NOT NULL,
+				mime TEXT NOT NULL,
+				name TEXT NOT NULL,
+				size INTEGER NOT NULL,
+				sha256 TEXT NOT NULL,
+				origin TEXT NOT NULL,
+				created INTEGER NOT NULL,
+				inline BLOB,
+				blob_path TEXT NOT NULL DEFAULT ''
+			);
+		`)
+		if err != nil {
+			return fmt.Errorf("migrate create new: %w", err)
+		}
+		rows, err := db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items`)
+		if err != nil {
+			return fmt.Errorf("migrate select old: %w", err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id, kind, mime, name, sha256, origin, createdStr, blobPath string
+			var size int64
+			var inline []byte
+			if err := rows.Scan(&id, &kind, &mime, &name, &size, &sha256, &origin, &createdStr, &inline, &blobPath); err != nil {
+				return err
+			}
+			var createdInt int64
+			if t, err := time.Parse(time.RFC3339Nano, createdStr); err == nil {
+				createdInt = t.UnixNano()
+			} else if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
+				createdInt = t.UnixNano()
+			}
+			_, err = db.Exec(`INSERT INTO items_new(id, kind, mime, name, size, sha256, origin, created, inline, blob_path) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+				id, kind, mime, name, size, sha256, origin, createdInt, inline, blobPath)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`DROP TABLE items`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE items_new RENAME TO items`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_items_sha256 ON items(sha256)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_items_created ON items(created DESC)`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -106,12 +166,15 @@ func (s *Store) Put(it Item) error {
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO items(id, kind, mime, name, size, sha256, origin, created, inline, blob_path)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		it.ID, it.Kind, it.Mime, it.Name, it.Size, it.SHA256, it.Origin, it.Created.UTC().Format(time.RFC3339Nano), it.Inline, it.BlobPath,
+		it.ID, it.Kind, it.Mime, it.Name, it.Size, it.SHA256, it.Origin, it.Created.UnixNano(), it.Inline, it.BlobPath,
 	)
 	if err != nil {
 		return fmt.Errorf("store put %s: %w", it.ID, err)
 	}
-	_ = s.EnforceRetention(500, 2*1024*1024*1024)
+	s.putCount++
+	if s.putCount%10 == 0 {
+		_ = s.EnforceRetention(500, 2*1024*1024*1024)
+	}
 	return nil
 }
 
@@ -121,15 +184,15 @@ func (s *Store) Recent(n int) ([]Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("recent query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Item
 	for rows.Next() {
 		var it Item
-		var created string
-		if err := rows.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &created, &it.Inline, &it.BlobPath); err != nil {
+		var createdNs int64
+		if err := rows.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
 			return nil, err
 		}
-		it.Created, _ = time.Parse(time.RFC3339Nano, created)
+		it.Created = time.Unix(0, createdNs)
 		out = append(out, it)
 	}
 	return out, rows.Err()
@@ -139,14 +202,14 @@ func (s *Store) Recent(n int) ([]Item, error) {
 func (s *Store) BySHA(sha string) (Item, bool, error) {
 	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items WHERE sha256 = ? LIMIT 1`, sha)
 	var it Item
-	var created string
-	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &created, &it.Inline, &it.BlobPath); err != nil {
+	var createdNs int64
+	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
 		if err == sql.ErrNoRows {
 			return Item{}, false, nil
 		}
 		return Item{}, false, fmt.Errorf("by sha: %w", err)
 	}
-	it.Created, _ = time.Parse(time.RFC3339Nano, created)
+	it.Created = time.Unix(0, createdNs)
 	return it, true, nil
 }
 
@@ -154,14 +217,14 @@ func (s *Store) BySHA(sha string) (Item, bool, error) {
 func (s *Store) Get(id string) (Item, bool, error) {
 	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items WHERE id = ?`, id)
 	var it Item
-	var created string
-	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &created, &it.Inline, &it.BlobPath); err != nil {
+	var createdNs int64
+	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
 		if err == sql.ErrNoRows {
 			return Item{}, false, nil
 		}
 		return Item{}, false, err
 	}
-	it.Created, _ = time.Parse(time.RFC3339Nano, created)
+	it.Created = time.Unix(0, createdNs)
 	return it, true, nil
 }
 
@@ -222,7 +285,7 @@ func (s *Store) ListOutbox(peerID string) ([]OutboxEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []OutboxEntry
 	for rows.Next() {
 		var e OutboxEntry
@@ -293,7 +356,7 @@ func (s *Store) EnforceRetention(maxItems int, maxBytes int64) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type entry struct {
 		id       string
 		size     int64

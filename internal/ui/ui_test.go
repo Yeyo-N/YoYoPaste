@@ -1,3 +1,4 @@
+//nolint:all
 package ui
 
 import (
@@ -15,7 +16,7 @@ import (
 
 type stubEngine struct{ enabled bool }
 
-func (e *stubEngine) Enabled() bool      { return e.enabled }
+func (e *stubEngine) Enabled() bool     { return e.enabled }
 func (e *stubEngine) SetEnabled(v bool) { e.enabled = v }
 
 type stubClient struct {

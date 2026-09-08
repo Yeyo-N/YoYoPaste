@@ -41,7 +41,7 @@ func main() {
 		slog.Error("open store", "err", err)
 		os.Exit(1)
 	}
-	defer store.Close(st)
+	defer func() { _ = store.Close(st) }()
 
 	peerSrv := peer.New(st, "dev")
 	eng := sync.New(st, peerSrv)

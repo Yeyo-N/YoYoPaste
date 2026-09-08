@@ -11,6 +11,7 @@ import (
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 // Peer describes a tailnet peer.
@@ -21,6 +22,7 @@ type Peer struct {
 	IP       netip.Addr
 	Online   bool
 	LastSeen time.Time
+	UserID   tailcfg.UserID
 }
 
 // ErrTailscaleUnavailable is returned when Tailscale is not running.
@@ -101,6 +103,7 @@ func Peers(ctx context.Context) ([]Peer, error) {
 			IP:       ip,
 			Online:   ps.Online,
 			LastSeen: ps.LastSeen,
+			UserID:   ps.UserID,
 		}
 		// Fallback DNSName if HostName empty
 		if p.Name == "" {
@@ -135,11 +138,24 @@ func WhoIs(ctx context.Context, remoteAddr string) (Peer, error) {
 		osName = resp.Node.Hostinfo.OS()
 	}
 	return Peer{
-		ID:   string(resp.Node.StableID),
-		Name: resp.Node.ComputedName,
-		OS:   osName,
-		IP:   ip,
+		ID:     string(resp.Node.StableID),
+		Name:   resp.Node.ComputedName,
+		OS:     osName,
+		IP:     ip,
+		UserID: resp.Node.User,
 	}, nil
+}
+
+// SelfUserID returns the UserID of the current node.
+func SelfUserID(ctx context.Context) (tailcfg.UserID, error) {
+	st, err := statusClient().Status(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrTailscaleUnavailable, err)
+	}
+	if st == nil || st.Self == nil {
+		return 0, fmt.Errorf("%w: no self status", ErrTailscaleUnavailable)
+	}
+	return st.Self.UserID, nil
 }
 
 // IsTailscaleUnavailable reports whether err wraps ErrTailscaleUnavailable.

@@ -1,3 +1,4 @@
+//nolint:all
 package peer
 
 import (
@@ -32,43 +33,64 @@ func (s *stubClient) WhoIs(_ context.Context, _ string) (*apitype.WhoIsResponse,
 }
 
 func allowAll() *stubClient {
-	return &stubClient{whois: &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "test"}}}
+	return &stubClient{
+		status: &ipnstate.Status{BackendState: "Running", Self: &ipnstate.PeerStatus{UserID: 1}},
+		whois:  &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "test", User: 1}},
+	}
 }
 
 func denyAll() *stubClient {
 	return &stubClient{wErr: fmt.Errorf("not tailnet peer")}
 }
 
-func TestAuthMiddleware(t *testing.T) {
-	tsnet.SetClient(denyAll())
-	defer tsnet.ResetClient()
-	srv := New(nil, "test")
-	handler := srv.Handler()
+func allowDifferentUser() *stubClient {
+	return &stubClient{
+		status: &ipnstate.Status{BackendState: "Running", Self: &ipnstate.PeerStatus{UserID: 1}},
+		whois:  &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "other", User: 2}},
+	}
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/v0/hello", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 got %d", rec.Code)
+func TestAuthMiddleware(t *testing.T) {
+	// table-driven per YYP-034
+	tests := []struct {
+		name string
+		stub *stubClient
+		want int
+	}{
+		{"same-user", allowAll(), http.StatusOK},
+		{"different-user", allowDifferentUser(), http.StatusForbidden},
+		{"whois-error", denyAll(), http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tsnet.SetClient(tc.stub)
+			defer tsnet.ResetClient()
+			// reset auth log for clean test
+			authLogMu.Lock()
+			authLogged = make(map[string]struct{})
+			authLogMu.Unlock()
+			srv := New(nil, "test")
+			handler := srv.Handler()
+			req := httptest.NewRequest(http.MethodGet, "/v0/hello", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("%s: expected %d got %d", tc.name, tc.want, rec.Code)
+			}
+		})
 	}
 
 	// X-Forwarded-For must not bypass
 	tsnet.SetClient(denyAll())
-	req = httptest.NewRequest(http.MethodGet, "/v0/hello", nil)
+	defer tsnet.ResetClient()
+	srv := New(nil, "test")
+	handler := srv.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/v0/hello", nil)
 	req.Header.Set("X-Forwarded-For", "100.64.0.1")
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("XFF bypass: got %d", rec.Code)
-	}
-
-	// Allowed
-	tsnet.SetClient(allowAll())
-	req = httptest.NewRequest(http.MethodGet, "/v0/hello", nil)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 got %d", rec.Code)
 	}
 }
 

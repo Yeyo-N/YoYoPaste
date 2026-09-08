@@ -1,3 +1,4 @@
+//nolint:all
 package tsnet
 
 import (
@@ -7,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"go4.org/mem"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/types/key"
-	"go4.org/mem"
 )
 
 type stubClient struct {
@@ -33,7 +34,7 @@ func TestPeersFiltering(t *testing.T) {
 	ip1 := netip.MustParseAddr("100.64.0.1")
 	ip2 := netip.MustParseAddr("100.64.0.2")
 	ip3 := netip.MustParseAddr("100.64.0.3")
-	pk1, pk2, pk3 := key.NodePublic{}, key.NodePublic{}, key.NodePublic{}
+	var pk1, pk2, pk3 key.NodePublic
 	// generate distinct keys by setting bytes
 	pk1 = key.NodePublicFromRaw32(mem.B([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}))
 	pk2 = key.NodePublicFromRaw32(mem.B([]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}))

@@ -30,9 +30,9 @@ func Pull(ctx context.Context, origin tsnet.Peer, it store.Item, st *store.Store
 		return nil
 	}
 
-	// Resume loop with backoff up to 3 attempts for test; real code would retry indefinitely with backoff.
+	deadline := time.Now().Add(10 * time.Minute)
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		var offset int64
 		if fi, err := os.Stat(partPath); err == nil {
 			offset = fi.Size()
@@ -44,18 +44,31 @@ func Pull(ctx context.Context, origin tsnet.Peer, it store.Item, st *store.Store
 		err := downloadChunk(ctx, origin, it.ID, partPath, offset)
 		if err != nil {
 			lastErr = err
-			// retry with backoff
+			backoff := time.Duration(200*(1<<attempt)) * time.Millisecond
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 200 * time.Millisecond):
+			case <-time.After(backoff):
 			}
 			continue
 		}
-		// Verify sha256
+		// Verify sha256 - retry on failure instead of returning
 		if err := verifyAndFinalize(partPath, finalPath, it.SHA256, it.Size); err != nil {
+			lastErr = err
 			_ = os.Remove(partPath)
-			return err
+			backoff := time.Duration(200*(1<<attempt)) * time.Millisecond
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			continue
 		}
 		// Update store blob_path
 		_ = st.UpdateBlobPath(it.ID, finalPath)
@@ -78,15 +91,19 @@ func downloadChunk(ctx context.Context, origin tsnet.Peer, id, partPath string, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("blob status %d", resp.StatusCode)
+	}
+	// If server ignored Range and returned 200 while we have a partial file, truncate before appending.
+	if offset > 0 && resp.StatusCode == http.StatusOK {
+		_ = os.Remove(partPath)
 	}
 	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// Stream copy without holding in memory
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		return err
@@ -99,7 +116,7 @@ func verifyAndFinalize(partPath, finalPath, expectedSHA string, expectedSize int
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, _ := f.Stat()
 	if fi.Size() != expectedSize {
 		return fmt.Errorf("size mismatch %d != %d", fi.Size(), expectedSize)
@@ -115,5 +132,3 @@ func verifyAndFinalize(partPath, finalPath, expectedSHA string, expectedSize int
 	}
 	return os.Rename(partPath, finalPath)
 }
-
-

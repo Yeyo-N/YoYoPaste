@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -36,7 +37,7 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-var suppress bool
+var suppress atomic.Bool
 
 func watch(ctx context.Context) (<-chan store.Item, error) {
 	ch := make(chan store.Item, 4)
@@ -55,8 +56,8 @@ func watch(ctx context.Context) (<-chan store.Item, error) {
 					continue
 				}
 				last = cc
-				if suppress {
-					suppress = false
+				if suppress.Load() {
+					suppress.Store(false)
 					continue
 				}
 				cstr := C.getString()
@@ -71,7 +72,7 @@ func watch(ctx context.Context) (<-chan store.Item, error) {
 				h := sha256.Sum256(data)
 				sha := fmt.Sprintf("%x", h[:])
 				it := store.Item{
-					ID:      ulid.MustNew(ulid.Now(), nil).String(),
+					ID:      ulid.Make().String(),
 					Kind:    "text",
 					Mime:    "text/plain; charset=utf-8",
 					Size:    int64(len(data)),
@@ -94,7 +95,7 @@ func set(it store.Item) error {
 	if it.Kind != "text" {
 		return fmt.Errorf("only text supported in this build")
 	}
-	suppress = true
+	suppress.Store(true)
 	cstr := C.CString(string(it.Inline))
 	defer C.free(unsafe.Pointer(cstr))
 	C.setString(cstr)

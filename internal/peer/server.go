@@ -7,8 +7,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,10 +74,11 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		ipStr = ip.String()
 	}
+	hostname, _ := os.Hostname()
 	resp := map[string]string{
-		"id":      "self",
-		"name":    "yoyopaste",
-		"os":      "unknown",
+		"id":      ipStr,
+		"name":    hostname,
+		"os":      runtime.GOOS,
 		"version": s.version,
 		"ip":      ipStr,
 	}
@@ -89,8 +91,13 @@ func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sync disabled", http.StatusServiceUnavailable)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var it store.Item
 	if err := json.NewDecoder(r.Body).Decode(&it); err != nil {
+		if strings.Contains(err.Error(), "request body too large") {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -98,7 +105,10 @@ func (s *Server) handleClip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id/sha256", http.StatusBadRequest)
 		return
 	}
-	// If inline size >4KiB reject? allow but server just stores.
+	if len(it.Inline) > 4096 {
+		http.Error(w, "inline too large", http.StatusBadRequest)
+		return
+	}
 	if err := s.store.Put(it); err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return
@@ -158,7 +168,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.hub.unsubscribe(ch)
 
 	// Send initial comment to confirm connection
-	fmt.Fprintf(w, ": connected\n\n")
+	_, _ = fmt.Fprintf(w, ": connected\n\n")
 	fl.Flush()
 
 	for {
@@ -167,20 +177,43 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case it := <-ch:
 			data, _ := json.Marshal(it)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			fl.Flush()
 		case <-time.After(30 * time.Second):
-			fmt.Fprintf(w, ": heartbeat\n\n")
+			_, _ = fmt.Fprintf(w, ": heartbeat\n\n")
 			fl.Flush()
 		}
 	}
 }
 
+var (
+	authLogMu  sync.Mutex
+	authLogged = make(map[string]struct{})
+)
+
 func authTailnet(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := tsnet.WhoIs(r.Context(), r.RemoteAddr)
+		peer, err := tsnet.WhoIs(r.Context(), r.RemoteAddr)
 		if err != nil {
-			// Log once? For now just 403.
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		selfUID, err := tsnet.SelfUserID(r.Context())
+		if err != nil {
+			http.Error(w, "tailscale unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if peer.UserID != selfUID {
+			key := peer.ID
+			if key == "" {
+				key = r.RemoteAddr
+			}
+			authLogMu.Lock()
+			if _, ok := authLogged[key]; !ok {
+				slog.Warn("auth rejected: user mismatch", "peer", peer.Name, "peerID", peer.ID, "peerUser", peer.UserID, "selfUser", selfUID, "remote", r.RemoteAddr)
+				authLogged[key] = struct{}{}
+			}
+			authLogMu.Unlock()
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -230,7 +263,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// http.ServeContent handles Range, HEAD, Content-Type
 	http.ServeContent(w, r, it.Name, it.Created, f)
 }
@@ -242,7 +275,7 @@ func (s *Server) handleBlobHead(w http.ResponseWriter, r *http.Request) {
 func cleanID(id string) string {
 	// Very strict: alnum + - _ only
 	for _, c := range id {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' {
 			return ""
 		}
 	}
@@ -251,6 +284,3 @@ func cleanID(id string) string {
 	}
 	return id
 }
-
-// Ensure netip import used
-var _ = netip.Addr{}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -15,13 +16,13 @@ import (
 )
 
 var (
-	user32                 = windows.NewLazySystemDLL("user32.dll")
-	procAddClipboardFormatListener = user32.NewProc("AddClipboardFormatListener")
+	user32                            = windows.NewLazySystemDLL("user32.dll")
+	procAddClipboardFormatListener    = user32.NewProc("AddClipboardFormatListener")
 	procRemoveClipboardFormatListener = user32.NewProc("RemoveClipboardFormatListener")
 	procGetClipboardSequenceNumber    = user32.NewProc("GetClipboardSequenceNumber")
 )
 
-var suppress bool
+var suppress atomic.Bool
 
 func watch(ctx context.Context) (<-chan store.Item, error) {
 	ch := make(chan store.Item, 4)
@@ -50,8 +51,8 @@ func watch(ctx context.Context) (<-chan store.Item, error) {
 						continue
 					}
 					last = seq
-					if suppress {
-						suppress = false
+					if suppress.Load() {
+						suppress.Store(false)
 						continue
 					}
 					it := readClipboardText()
@@ -105,7 +106,7 @@ func readClipboardText() *store.Item {
 	data := []byte(s)
 	hash := sha256.Sum256(data)
 	return &store.Item{
-		ID:      ulid.MustNew(ulid.Now(), nil).String(),
+		ID:      ulid.Make().String(),
 		Kind:    "text",
 		Mime:    "text/plain; charset=utf-8",
 		Size:    int64(len(data)),
@@ -119,7 +120,7 @@ func set(it store.Item) error {
 	if it.Kind != "text" {
 		return fmt.Errorf("only text supported")
 	}
-	suppress = true
+	suppress.Store(true)
 	// Write CF_UNICODETEXT
 	if !windows.OpenClipboard(0) {
 		return fmt.Errorf("open clipboard failed")

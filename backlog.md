@@ -381,14 +381,14 @@ Share sheet target accepting text, URLs, images and files; posts to the selected
 
 ---
 
-# Phase 2.5 — Review remediation (YYP-001..022 shipped with defects)
+# Phase 2.5 — Review remediation — **COMPLETE** (verified 2026-09-08)
 
 All of Phase 1–4 is implemented and green (`go build`, `go vet`, `go test -race` all pass).
 These tasks fix what the review found. **YYP-032 through YYP-035 block all further
 feature work** — do them before YYP-024.
 
 ### YYP-032 · Fix ULID entropy — IDs collide within a millisecond
-**P0 · S · Ready · deps: none · skills: Go**
+**P0 · S · Done · deps: none · skills: Go**
 
 `ulid.MustNew(ulid.Now(), nil)` passes a nil entropy reader, producing all-zero
 entropy. Verified: two calls in the same millisecond both return
@@ -406,7 +406,7 @@ Sites: `internal/clip/clip_darwin.go:74`, `internal/clip/clip_windows.go:108`,
 ---
 
 ### YYP-033 · CI is red on its own repository
-**P0 · S · Ready · deps: none · skills: Go**
+**P0 · S · Done · deps: none · skills: Go**
 
 `.github/workflows/ci.yml` gates on `gofmt -s -l .`, and eight committed files
 fail it: `e2e/text_test.go`, `internal/clip/clip_windows.go`,
@@ -421,7 +421,7 @@ it has never passed, because nothing was ever pushed to trigger it.
 ---
 
 ### YYP-034 · authTailnet accepts any tailnet node, not just ours
-**P0 · M · Ready · deps: none · skills: Go, Tailscale**
+**P0 · M · Done · deps: none · skills: Go, Tailscale**
 
 `internal/peer/server.go:authTailnet` calls `tsnet.WhoIs` and accepts on any
 non-error result. ARCHITECTURE.md §2 requires rejecting "a caller outside the
@@ -443,7 +443,7 @@ the caller is — this is a comparison we forgot to make, not a missing subsyste
 ---
 
 ### YYP-035 · POST /v0/clip has no body limit
-**P0 · S · Ready · deps: none · skills: Go**
+**P0 · S · Done · deps: none · skills: Go**
 
 `handleClip` calls `json.NewDecoder(r.Body).Decode(&it)` with no
 `http.MaxBytesReader`. `inline` is a `[]byte` with no size check, so an
@@ -459,7 +459,7 @@ STYLE.md forbids simplifying away validation at a trust boundary. This is one.
 ---
 
 ### YYP-036 · Dedupe is permanent, so re-copying old text silently fails
-**P1 · M · Ready · deps: 032 · skills: Go**
+**P1 · M · Done · deps: 032 · skills: Go**
 
 `engine.handleWatcherItem` and `handleInbound` both dedupe with
 `store.BySHA(...)` against **all history**. Copy "hello", copy something else,
@@ -477,7 +477,7 @@ broadcast twice. The existing echo-loop test must still terminate.
 ---
 
 ### YYP-037 · Blob resume corrupts the file when the peer ignores Range
-**P1 · M · Ready · deps: none · skills: Go**
+**P1 · M · Done · deps: none · skills: Go**
 
 `internal/peer/pull.go:downloadChunk` opens the `.part` file `O_APPEND` and
 copies the response body without checking the status code against the offset.
@@ -499,7 +499,7 @@ produces a correct final file. A mid-transfer connection drop resumes and comple
 ---
 
 ### YYP-038 · Data race on the macOS clipboard suppress flag
-**P1 · S · Ready · deps: none · skills: Go**
+**P1 · S · Done · deps: none · skills: Go**
 
 `internal/clip/clip_darwin.go:39` declares `var suppress bool`, written by
 `Set` (caller's goroutine) and read by the 500 ms poll goroutine with no
@@ -515,7 +515,7 @@ skipped when there is no window server.
 ---
 
 ### YYP-039 · History ordering is wrong for same-second items
-**P2 · S · Ready · deps: none · skills: Go, SQLite**
+**P2 · S · Done · deps: none · skills: Go, SQLite**
 
 `created` is stored as `time.RFC3339Nano` text and ordered with
 `ORDER BY created DESC` — a string sort. Go trims trailing zeros from the
@@ -531,7 +531,7 @@ order.
 ---
 
 ### YYP-040 · Cleanups
-**P2 · M · Ready · deps: none · skills: Go**
+**P2 · M · Done · deps: none · skills: Go**
 
 - `internal/peer/server.go` ends with `var _ = netip.Addr{}` — dead code
   propping up an import that should just be deleted.

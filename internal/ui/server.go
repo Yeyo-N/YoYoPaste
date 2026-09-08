@@ -80,8 +80,8 @@ type peerInfo struct {
 }
 
 type stateResp struct {
-	Enabled bool      `json:"enabled"`
-	Self    *selfInfo `json:"self"`
+	Enabled bool       `json:"enabled"`
+	Self    *selfInfo  `json:"self"`
 	Peers   []peerInfo `json:"peers"`
 }
 
@@ -140,7 +140,7 @@ func (s *Server) handleToggle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
+		_, _ = w.Write([]byte("[]"))
 		return
 	}
 	nStr := r.URL.Query().Get("n")
@@ -203,7 +203,7 @@ func (s *Server) handleHistoryCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true}`))
+	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
 //go:embed index.html
@@ -222,4 +222,3 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(indexHTML)
 }
-

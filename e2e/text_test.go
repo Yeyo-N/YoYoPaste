@@ -1,3 +1,4 @@
+//nolint:all
 package e2e
 
 import (
@@ -20,11 +21,17 @@ import (
 )
 
 type stubClient struct {
-	wErr error
-	whois *apitype.WhoIsResponse
+	status *ipnstate.Status
+	wErr   error
+	whois  *apitype.WhoIsResponse
 }
 
-func (s *stubClient) Status(_ context.Context) (*ipnstate.Status, error) { return nil, nil }
+func (s *stubClient) Status(_ context.Context) (*ipnstate.Status, error) {
+	if s.status != nil {
+		return s.status, nil
+	}
+	return &ipnstate.Status{BackendState: "Running", Self: &ipnstate.PeerStatus{UserID: 1}}, nil
+}
 func (s *stubClient) WhoIs(_ context.Context, _ string) (*apitype.WhoIsResponse, error) {
 	if s.wErr != nil {
 		return nil, s.wErr
@@ -32,7 +39,12 @@ func (s *stubClient) WhoIs(_ context.Context, _ string) (*apitype.WhoIsResponse,
 	return s.whois, nil
 }
 
-func allow() *stubClient { return &stubClient{whois: &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "test"}}} }
+func allow() *stubClient {
+	return &stubClient{
+		status: &ipnstate.Status{BackendState: "Running", Self: &ipnstate.PeerStatus{UserID: 1}},
+		whois:  &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "test", User: 1}},
+	}
+}
 
 func TestTwoDeviceTextSync(t *testing.T) {
 	tsnet.SetClient(allow())
