@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YoYoPaste</title>
+<style>
+:root{--bg:#fff;--fg:#111;--muted:#666;--border:#ddd;--accent:#0a84ff}
+@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--fg:#eee;--muted:#aaa;--border:#333;--accent:#0a84ff}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);max-width:720px;margin:0 auto;padding:24px}
+header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:16px}
+h1{font-size:20px}
+.controls{display:flex;align-items:center;gap:12px}
+.dot{width:10px;height:10px;border-radius:50%;background:#ccc;display:inline-block}
+.dot.on{background:#2ecc71}
+.dot.off{background:#e74c3c}
+.toggle{position:relative;width:48px;height:28px;background:#ccc;border-radius:14px;cursor:pointer;border:none}
+.toggle.on{background:var(--accent)}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:24px;height:24px;background:#fff;border-radius:50%;transition:transform .2s}
+.toggle.on::after{transform:translateX(20px)}
+.toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+table{width:100%;border-collapse:collapse;margin-top:16px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--border);font-size:14px}
+th{color:var(--muted);font-weight:600}
+.status{font-size:12px}
+a.github{color:var(--muted);text-decoration:none;font-size:20px}
+a.github:hover{color:var(--fg)}
+</style>
+</head>
+<body>
+<header>
+<h1>YoYoPaste</h1>
+<div class="controls">
+<span id="dot" class="dot off" aria-hidden="true"></span>
+<span id="statusText">OFF</span>
+<button id="toggle" class="toggle" role="switch" aria-checked="false" aria-label="Toggle YoYoPaste enabled"></button>
+<a class="github" href="https://github.com/Yeyo-N/YoYoPaste" aria-label="GitHub">⌗</a>
+</div>
+</header>
+<table aria-label="Devices">
+<thead><tr><th>DEVICE</th><th>TAILSCALE IP</th><th>STATUS</th><th>LAST SYNC</th></tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+<details style="margin-top:24px">
+<summary style="cursor:pointer;color:var(--muted)">History</summary>
+<ul id="history" style="list-style:none;margin-top:12px"></ul>
+</details>
+<script>
+const dot=document.getElementById('dot'), statusText=document.getElementById('statusText'), toggleBtn=document.getElementById('toggle'), tbody=document.getElementById('tbody');
+async function fetchState(){
+  try{
+    const r=await fetch('/api/state'); const s=await r.json();
+    const on=s.enabled;
+    dot.className='dot '+(on?'on':'off');
+    statusText.textContent=on?'ON':'OFF';
+    toggleBtn.classList.toggle('on', on);
+    toggleBtn.setAttribute('aria-checked', on);
+    tbody.innerHTML='';
+    (s.peers||[]).forEach(p=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${p.name}</td><td>${p.ip}</td><td><span class="status">${p.status}</span></td><td>${p.last_sync}</td>`;
+      tbody.appendChild(tr);
+    });
+    if((s.peers||[]).length===0){
+      const tr=document.createElement('tr'); tr.innerHTML='<td colspan="4" style="color:var(--muted)">No peers online</td>'; tbody.appendChild(tr);
+    }
+  }catch(e){ /* ignore */ }
+}
+toggleBtn.addEventListener('click', async ()=>{
+  await fetch('/api/toggle',{method:'POST'});
+  fetchState();
+});
+toggleBtn.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleBtn.click(); }});
+async function fetchHistory(){
+  try{
+    const r=await fetch('/api/history?n=50'); const items=await r.json();
+    const ul=document.getElementById('history'); ul.innerHTML='';
+    items.forEach(it=>{
+      const li=document.createElement('li');
+      li.style.cssText='padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px';
+      li.textContent=(it.preview||it.name||it.id).slice(0,80);
+      li.title='Click to copy';
+      li.addEventListener('click', async()=>{ await fetch('/api/history/'+it.id+'/copy',{method:'POST'}); });
+      ul.appendChild(li);
+    });
+  }catch(e){}
+}
+fetchState(); fetchHistory(); setInterval(fetchState,2000); setInterval(fetchHistory,5000);
+</script>
+</body>
+</html>

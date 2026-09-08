@@ -1,0 +1,24 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  ci:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: gofmt
+        run: |
+          out=$(gofmt -s -l .)
+          if [ -n "$out" ]; then echo "unformatted files:"; echo "$out"; exit 1; fi
+        shell: bash
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --enable=errcheck,govet,ineffassign,staticcheck,unused
+      - run: go test -race ./...
