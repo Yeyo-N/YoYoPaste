@@ -415,7 +415,7 @@ Two devices are required for any Phase 2+ task. If you have only one, `e2e/` (YY
 
 ## Worker protocol
 
-1. Claim a `Ready` task by commenting on its issue; set it `In progress` here in the same PR.
+1. Claim a `Ready` task by setting it `In progress` in this file, in the first commit of your branch. (Outside contributors: open an issue instead.)
 2. Branch `yyp-NNN-short-slug`. One task, one PR.
 3. Follow STYLE.md. The PR body must name anything you deliberately skipped and the condition that would justify adding it.
 4. Set `Review` and request the master node. The master node marks `Done` and unblocks dependents.
