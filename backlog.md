@@ -554,6 +554,58 @@ order.
 
 ---
 
+# Phase 2.6 — CI reveals Windows was never built
+
+Pushing to CI for the first time exposed two things local macOS testing could not.
+
+### YYP-042 · The Windows clipboard code does not compile
+**P0 · L · Ready · deps: none · skills: Go, Win32**
+
+`go vet` on `windows-latest` fails with ~11 errors in `internal/clip/clip_windows.go`:
+`windows.OpenClipboard`, `CloseClipboard`, `EmptyClipboard`, `GetClipboardData`,
+`GlobalLock`, `GlobalUnlock`, `GlobalAlloc`, `CF_UNICODETEXT` — none of these
+exist in `golang.org/x/sys/windows`. They are user32/kernel32 entry points that
+must be declared as lazy procs.
+
+The file already does this correctly for `AddClipboardFormatListener` at the top,
+then assumes package-level functions for everything else. **YYP-010 was reported
+complete but has never compiled on any machine** — it was only ever built on
+macOS, where the `//go:build windows` tag excludes it.
+
+While in here, note the second problem: `watch()` falls back to a 100 ms polling
+loop when window creation fails, and the comment says "Simplified". YYP-010
+specified event-driven with *no polling loop in this file* (D5). Make the
+message-only window path work, or say plainly why it cannot.
+
+**Fix** Declare the missing entry points as `NewProc` lazy procs alongside the
+existing ones and call them through `.Call()`.
+**Acceptance** `GOOS=windows go build ./...` and `GOOS=windows go vet ./...`
+pass — **run these locally before pushing; they need no Windows machine.** The
+Windows CI job goes green.
+**Ponytail** Follow the lazy-proc pattern already in the file. Do not add a
+clipboard dependency.
+
+---
+
+### YYP-043 · golangci-lint cannot load the config
+**P0 · S · Ready · deps: none · skills: GitHub Actions**
+
+Both Ubuntu and macOS fail with: `the Go language version (go1.24) used to build
+golangci-lint is lower than the targeted Go version (1.26.6)`. The action pins
+`version: latest`, which resolves to a binary built with an older toolchain than
+the `go 1.26.6` directive in `go.mod`.
+
+Two candidate fixes — pick whichever CI proves out, do not guess twice: pin a
+`golangci-lint` release built against Go 1.26+, or relax the `go` directive in
+`go.mod` to a minor version (`go 1.26`) if the patch-level pin is what the
+linter is reading.
+
+**Acceptance** The lint step runs and reports actual findings on all three OSes.
+Whatever it then reports is in scope for this task — the linter has never
+successfully executed, so its output is entirely unknown.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
