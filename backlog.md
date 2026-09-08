@@ -381,6 +381,179 @@ Share sheet target accepting text, URLs, images and files; posts to the selected
 
 ---
 
+# Phase 2.5 — Review remediation (YYP-001..022 shipped with defects)
+
+All of Phase 1–4 is implemented and green (`go build`, `go vet`, `go test -race` all pass).
+These tasks fix what the review found. **YYP-032 through YYP-035 block all further
+feature work** — do them before YYP-024.
+
+### YYP-032 · Fix ULID entropy — IDs collide within a millisecond
+**P0 · S · Ready · deps: none · skills: Go**
+
+`ulid.MustNew(ulid.Now(), nil)` passes a nil entropy reader, producing all-zero
+entropy. Verified: two calls in the same millisecond both return
+`01M1ZXNVJZ0000000000000000`. Because `store.Put` is `INSERT OR IGNORE` on the
+primary key, **two clipboard items copied in the same millisecond silently
+collapse into one — the second is lost.** IDs are also fully predictable.
+
+Sites: `internal/clip/clip_darwin.go:74`, `internal/clip/clip_windows.go:108`,
+`internal/sync/engine.go:156`.
+
+**Fix** Replace all three with `ulid.Make()` (crypto-seeded, monotonic).
+**Acceptance** A test generating 10 000 IDs in a tight loop yields 10 000 distinct values.
+**Ponytail** `ulid.Make()` is the one-line form. Do not build an ID service.
+
+---
+
+### YYP-033 · CI is red on its own repository
+**P0 · S · Ready · deps: none · skills: Go**
+
+`.github/workflows/ci.yml` gates on `gofmt -s -l .`, and eight committed files
+fail it: `e2e/text_test.go`, `internal/clip/clip_windows.go`,
+`internal/peer/blob_test.go`, `internal/peer/pull.go`, `internal/sync/sync_test.go`,
+`internal/tsnet/tsnet_test.go`, `internal/ui/server.go`, `internal/ui/ui_test.go`.
+Several test files are written with no spaces around tokens at all.
+
+**Fix** `gofmt -s -w .`. Then confirm the workflow actually ran and went green —
+it has never passed, because nothing was ever pushed to trigger it.
+**Acceptance** Green CI run on all three OSes, visible in the Actions tab.
+
+---
+
+### YYP-034 · authTailnet accepts any tailnet node, not just ours
+**P0 · M · Ready · deps: none · skills: Go, Tailscale**
+
+`internal/peer/server.go:authTailnet` calls `tsnet.WhoIs` and accepts on any
+non-error result. ARCHITECTURE.md §2 requires rejecting "a caller outside the
+tailnet **or belonging to another user**". `tsnet.Peers` filters on `UserID`;
+`WhoIs` does not. A shared node, a tagged device, or any other user on a
+multi-user tailnet currently passes authentication and can read and write
+clipboard history.
+
+This is the entire authentication system (D3/D7 — there is no second layer
+behind it), so it has to be exactly right.
+
+**Fix** Return the owning `UserID` from `tsnet.WhoIs` and compare it to
+`Status().Self.UserID` in the middleware. Reject mismatches with 403.
+**Acceptance** Table-driven test: same-user node → 200; different `UserID` → 403;
+`WhoIs` error → 403. Log rejections once per peer, not per request.
+**Ponytail** Do not add tokens or a pairing flow. The tailnet already knows who
+the caller is — this is a comparison we forgot to make, not a missing subsystem.
+
+---
+
+### YYP-035 · POST /v0/clip has no body limit
+**P0 · S · Ready · deps: none · skills: Go**
+
+`handleClip` calls `json.NewDecoder(r.Body).Decode(&it)` with no
+`http.MaxBytesReader`. `inline` is a `[]byte` with no size check, so an
+authenticated peer (or anything that gets past YYP-034) can force unbounded
+allocation. Protocol v0 caps `inline` at 4 KiB; nothing enforces it.
+
+STYLE.md forbids simplifying away validation at a trust boundary. This is one.
+
+**Fix** Wrap the body in `http.MaxBytesReader(w, r.Body, 64<<10)` and reject
+`len(it.Inline) > 4096` with 400.
+**Acceptance** A 1 MiB POST returns 413 and allocates no more than the cap.
+
+---
+
+### YYP-036 · Dedupe is permanent, so re-copying old text silently fails
+**P1 · M · Ready · deps: 032 · skills: Go**
+
+`engine.handleWatcherItem` and `handleInbound` both dedupe with
+`store.BySHA(...)` against **all history**. Copy "hello", copy something else,
+copy "hello" again → the second "hello" matches an existing row and is dropped.
+It never reaches the other device, with no error shown.
+
+The SHA check is doing double duty: breaking the echo loop (correct) and
+deduping history (wrong). Only the first is needed.
+
+**Fix** Scope the check to loop-breaking: compare against the most recent item
+only, or against items seen in the last ~2 seconds. History keeps every copy.
+**Acceptance** Test: copy A, copy B, copy A again → three items stored and A is
+broadcast twice. The existing echo-loop test must still terminate.
+
+---
+
+### YYP-037 · Blob resume corrupts the file when the peer ignores Range
+**P1 · M · Ready · deps: none · skills: Go**
+
+`internal/peer/pull.go:downloadChunk` opens the `.part` file `O_APPEND` and
+copies the response body without checking the status code against the offset.
+If the origin answers `200 OK` instead of `206` while `offset > 0` — an
+unsatisfiable range, a proxy, an older peer — the **full** body is appended to
+the partial data. `verifyAndFinalize` then fails on size, deletes the part file,
+and `Pull` returns immediately without retrying. The transfer is permanently lost.
+
+Two more problems in the same function: retries are capped at 5 with 200 ms–1 s
+backoff, so a real network drop exhausts them in about 3 seconds; and the
+in-code comment concedes this ("for test; real code would retry indefinitely").
+
+**Fix** If `offset > 0` and the status is 200, truncate the part file before
+copying. Let a verification failure retry rather than return. Raise the budget to
+a time-bounded retry (e.g. 10 minutes of exponential backoff, capped at 30 s).
+**Acceptance** Test: an origin that ignores `Range` and returns 200 still
+produces a correct final file. A mid-transfer connection drop resumes and completes.
+
+---
+
+### YYP-038 · Data race on the macOS clipboard suppress flag
+**P1 · S · Ready · deps: none · skills: Go**
+
+`internal/clip/clip_darwin.go:39` declares `var suppress bool`, written by
+`Set` (caller's goroutine) and read by the 500 ms poll goroutine with no
+synchronisation. `go test -race` does not catch it because `internal/clip` has
+**no test files at all** — YYP-009 required `clip_darwin_test.go` and it was
+never written.
+
+**Fix** `var suppress atomic.Bool`. Add the round-trip test YYP-009 specified,
+skipped when there is no window server.
+**Acceptance** `go test -race ./internal/clip/...` passes and actually exercises
+`Set` concurrently with the watcher.
+
+---
+
+### YYP-039 · History ordering is wrong for same-second items
+**P2 · S · Ready · deps: none · skills: Go, SQLite**
+
+`created` is stored as `time.RFC3339Nano` text and ordered with
+`ORDER BY created DESC` — a string sort. Go trims trailing zeros from the
+fractional part, so `...:00.5Z` and `...:00.50001Z` compare as `'Z' > '0'`,
+putting `.5` after `.50001`. History order and retention's "oldest first" are
+both wrong for items in the same second.
+
+**Fix** Store `created` as INTEGER Unix nanoseconds. One migration, one
+`ORDER BY`.
+**Acceptance** Test inserting items microseconds apart and asserting `Recent`
+order.
+
+---
+
+### YYP-040 · Cleanups
+**P2 · M · Ready · deps: none · skills: Go**
+
+- `internal/peer/server.go` ends with `var _ = netip.Addr{}` — dead code
+  propping up an import that should just be deleted.
+- `handleHello` returns hardcoded `"id":"self"`, `"name":"yoyopaste"`,
+  `"os":"unknown"`. Either return real identity from `tsnet.SelfIP`/`Status`, or
+  delete the endpoint and protocol v0 with it — nothing calls it.
+- `engine.handleInbound` contains three comment lines of the worker reasoning
+  with itself about what the spec meant. Delete them; keep the code.
+- `store.Put` runs `EnforceRetention` — `COUNT(*)` plus `SUM(size)` — on every
+  single insert, and loads every row into memory when over the cap. Move it to a
+  ticker, or run it every Nth insert.
+- `engine.handleWatcherItem` broadcasts to offline peers, relying on the 5 s
+  timeout to fail. Filter on `p.Online` and queue straight to the outbox.
+- `sync_test.go:TestOutboxQueueOnBroadcastFail` does not test its own name — the
+  worker's comment admits it could not set up the scenario, so it calls
+  `AddOutbox` directly and never asserts that entries are dropped after 20
+  attempts. Either write the real test or rename it honestly.
+
+**Ponytail** This is a deletion task. The diff should be net negative.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
@@ -391,6 +564,7 @@ Share sheet target accepting text, URLs, images and files; posts to the selected
 | YYP-029 | Blob dir GC + configurable retention cap | P3 | M |
 | YYP-030 | GitHub Wiki: protocol reference, troubleshooting, FAQ | P2 | L |
 | YYP-031 | Graphify pass over the real codebase → dependency graph in `docs/` | P3 | M |
+| YYP-041 | Two-machine manual verification: Mac ↔ Windows, real Tailscale | P0 | L |
 
 ---
 
@@ -415,8 +589,9 @@ Two devices are required for any Phase 2+ task. If you have only one, `e2e/` (YY
 
 ## Worker protocol
 
+0. **Commit your work.** One PR per task, on a branch. Work left uncommitted in the working tree has not been delivered.
 1. Claim a `Ready` task by setting it `In progress` in this file, in the first commit of your branch. (Outside contributors: open an issue instead.)
 2. Branch `yyp-NNN-short-slug`. One task, one PR.
-3. Follow STYLE.md. The PR body must name anything you deliberately skipped and the condition that would justify adding it.
+3. Run `gofmt -s -w .` before every commit — CI gates on it. Follow STYLE.md. The PR body must name anything you deliberately skipped and the condition that would justify adding it.
 4. Set `Review` and request the master node. The master node marks `Done` and unblocks dependents.
 5. Blocked or the task turns out to be larger than L? Stop and say so — do not expand scope inside a PR.
