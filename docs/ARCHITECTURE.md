@@ -21,6 +21,8 @@
 | D12 | Mobile discovery | Mobile clients cannot read Tailscale's LocalAPI. They fetch the roster from a desktop peer via `GET /v0/peers`, bootstrapped once from one address | LocalAPI on mobile; mDNS; a coordination server | The Tailscale iOS/Android apps do not expose LocalAPI to other apps, so `tsnet.Peers` is desktop-only. A desktop already has the roster; serving it is one endpoint. Mobile needs exactly one address to start, shown as a QR code in the desktop UI. |
 | D13 | Mobile clipboard posture | iOS and Android are **foreground and share-sheet only**. No background clipboard monitoring. | A background clipboard service | Android 10+ blocks background clipboard reads outright, and iOS offers no pasteboard change event in the background. This is a platform limit, not a design preference — auto-sync is a desktop-only capability and the UI must say so rather than appear broken. |
 
+| D14 | Windows process identity | `yoyopasted` runs **in the session of the user who owns the Tailscale GUI**, never as a SYSTEM service | A Windows service; running as any admin | Verified on `vista` 2026-09-09: `tailscaled` runs as SYSTEM but `tailscale-ipn` runs as the logged-in user, and the LocalAPI authorizes only that user. A daemon started as any other account gets `401 Unauthorized: Tailscale already in use by <user>`, so `SelfIP` fails and the peer server never binds. This rules out the obvious "install as a Windows service" design. |
+
 ### Consequences
 - **No central server, ever.** There is no code path that talks to a host we do not own.
 - The daemon **refuses to listen on `0.0.0.0`**. It binds only the Tailscale IP (peers) and `127.0.0.1` (local UI). Off-tailnet traffic is unreachable, not merely rejected.
@@ -126,12 +128,25 @@ No settings screen, no preferences window, no onboarding. Auto-sync is the only 
 
 ## 6. Performance
 
-Text sync is one `POST /v0/clip` round trip. Measured on the live `yahya.f.nouri@` tailnet to `vista` (100.69.105.61, Windows, DERP `waw`):
+Measured 2026-09-09, Mac (`100.94.132.8`) → Windows `vista` (`100.69.105.61`), **DERP `waw` relay, no direct path** (symmetric NAT):
 
-- `tailscale ping` via DERP: 157–222 ms (direct never established in this tailnet, symmetric NAT)
-- `POST /v0/clip` via DERP: 180–230 ms (DERP RTT + `MaxBytesReader` + `json.Decode` + `store.Put`)
+| Measurement | Value |
+|---|---|
+| `tailscale ping` RTT | 156–159 ms |
+| TCP connect | ~160 ms (1 RTT) |
+| `POST /v0/clip` total, cold connection | **316–330 ms** (2 RTT: handshake + request) |
+| `GET /v0/hello` total | 320–350 ms |
 
-On a direct WireGuard path (observed after a few seconds of traffic on other tails, or with port forwarding) the same `POST` measures 8–15 ms + local `clip.Set` <5 ms → **<30 ms** meets the <100 ms target. The target holds on direct, not on DERP. Send is fire-and-forget for the user-visible clipboard write: `handleWatcherItem` writes locally then `Broadcast` in parallel, so the local copy is immediate even if the network is DERP.
+`peer.Send` uses a package-level `http.Client`, so the daemon keeps connections
+alive and steady-state sends cost roughly one RTT (~160 ms) rather than two.
+
+**The <100 ms target does not hold over DERP.** It is a relay round trip, and no
+amount of local optimisation changes that. The target is achievable only on a
+direct WireGuard path, which this tailnet never established. Direct-path numbers
+are still unmeasured — do not quote any until they are.
+
+What is genuinely fast is the local half: the user's own clipboard is written
+before any network call, so copying never blocks on a peer.
 
 ## 7. Security posture
 
