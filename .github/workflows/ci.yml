@@ -23,9 +23,7 @@ jobs:
       - name: vet (non-windows)
         if: matrix.os != 'windows-latest'
         run: go vet ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
-          args: --enable=errcheck,govet,ineffassign,staticcheck,unused
-          install-mode: goinstall
+          version: v2.13.2
       - run: go test -race ./...
