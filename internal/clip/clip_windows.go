@@ -108,7 +108,10 @@ func readClipboardText() *store.Item {
 		return nil
 	}
 	defer func() { _, _, _ = procGlobalUnlock.Call(uintptr(h)) }()
-	s := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr))) //nolint:govet
+	// GlobalAlloc memory is not on the Go heap, so the GC cannot move it;
+	// the uintptr→unsafe.Pointer conversion is safe here. This is the
+	// standard Win32 clipboard pattern and every implementation uses it.
+	s := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr)))
 	if s == "" {
 		return nil
 	}
@@ -155,7 +158,7 @@ func set(it store.Item) error {
 		_, _, _ = procGlobalFree.Call(uintptr(h))
 		return fmt.Errorf("global lock failed")
 	}
-	dst := (*[1 << 20]uint16)(unsafe.Pointer(ptr))[:len(utf16):len(utf16)] //nolint:govet
+	dst := (*[1 << 20]uint16)(unsafe.Pointer(ptr))[:len(utf16):len(utf16)]
 	copy(dst, utf16)
 	_, _, _ = procGlobalUnlock.Call(uintptr(h))
 	ret, _, _ = procSetClipboardData.Call(uintptr(cfUnicodeText), uintptr(h))

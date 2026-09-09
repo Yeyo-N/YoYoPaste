@@ -59,6 +59,7 @@ async function fetchState(){
     tbody.innerHTML='';
     (s.peers||[]).forEach(p=>{
       const tr=document.createElement('tr');
+      if(p.status==="not installed") tr.style.opacity="0.5";
       tr.innerHTML=`<td>${p.name}</td><td>${p.ip}</td><td><span class="status">${p.status}</span></td><td>${p.last_sync}</td>`;
       tbody.appendChild(tr);
     });

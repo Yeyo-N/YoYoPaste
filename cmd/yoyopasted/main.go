@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/Yeyo-N/YoYoPaste/internal/peer"
+	"github.com/Yeyo-N/YoYoPaste/internal/roster"
 	"github.com/Yeyo-N/YoYoPaste/internal/store"
 	"github.com/Yeyo-N/YoYoPaste/internal/sync"
 	"github.com/Yeyo-N/YoYoPaste/internal/tray"
@@ -44,8 +45,11 @@ func main() {
 	defer func() { _ = store.Close(st) }()
 
 	peerSrv := peer.New(st, "dev")
-	eng := sync.New(st, peerSrv)
-	uiSrv := ui.NewWithStore(eng, st)
+	rstr := roster.New(ctx)
+	eng := sync.NewWithRoster(st, peerSrv, rstr)
+	uiSrv := ui.NewWithStoreAndRoster(eng, st, rstr)
+	// also serve roster to mobile clients via peer
+	peerSrv.SetRoster(rstr)
 
 	// Run servers
 	go func() {

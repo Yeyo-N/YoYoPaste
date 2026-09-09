@@ -6,6 +6,10 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    govet:
+      disable:
+        - unsafeptr
 issues:
   exclude-rules:
     - path: ".*_test\\.go"

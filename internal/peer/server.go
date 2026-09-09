@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Yeyo-N/YoYoPaste/internal/roster"
 	"github.com/Yeyo-N/YoYoPaste/internal/store"
 	"github.com/Yeyo-N/YoYoPaste/internal/tsnet"
 )
@@ -24,6 +25,7 @@ type Server struct {
 	mux     *http.ServeMux
 	hub     *sseHub
 	enabled func() bool
+	roster  *roster.Roster
 }
 
 // New creates a Server.
@@ -31,9 +33,9 @@ func New(st *store.Store, version string) *Server {
 	s := &Server{store: st, version: version, hub: newSSEHub(), enabled: func() bool { return true }}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v0/hello", s.handleHello)
+	mux.HandleFunc("GET /v0/peers", s.handlePeers)
 	mux.HandleFunc("POST /v0/clip", s.handleClip)
 	mux.HandleFunc("GET /v0/events", s.handleEvents)
-	// blob endpoints (YYP-016) will be added later: GET /v0/blob/{id}
 	mux.HandleFunc("GET /v0/blob/{id}", s.handleBlob)
 	mux.HandleFunc("HEAD /v0/blob/{id}", s.handleBlobHead)
 	s.mux = mux
@@ -228,6 +230,19 @@ func (s *Server) Announce(it store.Item) {
 
 // SetEnabledFunc sets callback for checking if sync is enabled.
 func (s *Server) SetEnabledFunc(fn func() bool) { s.enabled = fn }
+
+// SetRoster attaches a roster for participation probing (YYP-044).
+func (s *Server) SetRoster(r *roster.Roster) { s.roster = r }
+
+func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.roster == nil {
+		_ = json.NewEncoder(w).Encode([]roster.Peer{})
+		return
+	}
+	peers := s.roster.Peers()
+	_ = json.NewEncoder(w).Encode(peers)
+}
 
 // Subscribe returns a channel that receives inbound clips.
 func (s *Server) Subscribe() chan store.Item { return s.hub.subscribe() }

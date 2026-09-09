@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/Yeyo-N/YoYoPaste/internal/clip"
+	"github.com/Yeyo-N/YoYoPaste/internal/roster"
 	"github.com/Yeyo-N/YoYoPaste/internal/store"
 	"github.com/Yeyo-N/YoYoPaste/internal/tsnet"
 )
@@ -25,6 +28,7 @@ type Engine interface {
 type Server struct {
 	engine Engine
 	store  *store.Store
+	roster *roster.Roster
 	mux    *http.ServeMux
 }
 
@@ -47,6 +51,14 @@ func New(engine Engine) *Server {
 func NewWithStore(engine Engine, st *store.Store) *Server {
 	s := New(engine)
 	s.store = st
+	return s
+}
+
+// NewWithStoreAndRoster creates UI server with roster for YYP-046.
+func NewWithStoreAndRoster(engine Engine, st *store.Store, r *roster.Roster) *Server {
+	s := New(engine)
+	s.store = st
+	s.roster = r
 	return s
 }
 
@@ -96,13 +108,53 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if s.engine != nil {
 		enabled = s.engine.Enabled()
 	}
-	// Self IP
 	selfIPStr := ""
-	selfName := ""
 	if ip, err := tsnet.SelfIP(r.Context()); err == nil {
 		selfIPStr = ip.String()
 	}
-	// Could also get hostname
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "self"
+	}
+	selfOS := runtime.GOOS
+	// Prefer roster if available (YYP-044/046)
+	if s.roster != nil {
+		peers := s.roster.Peers()
+		pi := make([]peerInfo, 0, len(peers)+1)
+		// Self row first
+		pi = append(pi, peerInfo{Name: hostname, IP: selfIPStr, Status: "online", LastSync: "just now"})
+		for _, p := range peers {
+			if p.IP.String() == selfIPStr {
+				continue
+			}
+			var status string
+			if p.Online {
+				if p.Participating {
+					status = "online"
+				} else {
+					status = "not installed"
+				}
+			} else if p.Participating {
+				status = "offline"
+			} else {
+				status = "not installed"
+			}
+			lastSync := "never"
+			if !p.LastSync.IsZero() {
+				lastSync = time.Since(p.LastSync).Round(time.Second).String() + " ago"
+				if time.Since(p.LastSync) < time.Minute {
+					lastSync = "just now"
+				}
+			} else if p.Online && p.Participating {
+				lastSync = "never"
+			}
+			pi = append(pi, peerInfo{Name: p.Name, IP: p.IP.String(), Status: status, LastSync: lastSync})
+		}
+		resp := stateResp{Enabled: enabled, Self: &selfInfo{IP: selfIPStr, Name: hostname, OS: selfOS}, Peers: pi}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
 	peers, _ := tsnet.Peers(r.Context())
 	pi := make([]peerInfo, 0, len(peers))
 	for _, p := range peers {
@@ -121,7 +173,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		pi = append(pi, peerInfo{Name: p.Name, IP: p.IP.String(), Status: status, LastSync: lastSync})
 	}
-	resp := stateResp{Enabled: enabled, Self: &selfInfo{IP: selfIPStr, Name: selfName}, Peers: pi}
+	resp := stateResp{Enabled: enabled, Self: &selfInfo{IP: selfIPStr, Name: hostname, OS: selfOS}, Peers: pi}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
