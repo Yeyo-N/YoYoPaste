@@ -32,33 +32,17 @@ type Server struct {
 	mux    *http.ServeMux
 }
 
-// New creates a UI server.
-func New(engine Engine) *Server {
-	s := &Server{engine: engine}
+// New creates a UI server. Roster is required (YYP-054).
+func New(engine Engine, st *store.Store, r *roster.Roster) *Server {
+	s := &Server{engine: engine, store: st, roster: r}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("POST /api/toggle", s.handleToggle)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/history/{id}/copy", s.handleHistoryCopy)
-	// Serve static UI page (YYP-013) via embed.FS at "/"
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /index.html", s.handleIndex)
 	s.mux = mux
-	return s
-}
-
-// NewWithStore creates UI server with store for history.
-func NewWithStore(engine Engine, st *store.Store) *Server {
-	s := New(engine)
-	s.store = st
-	return s
-}
-
-// NewWithStoreAndRoster creates UI server with roster for YYP-046.
-func NewWithStoreAndRoster(engine Engine, st *store.Store, r *roster.Roster) *Server {
-	s := New(engine)
-	s.store = st
-	s.roster = r
 	return s
 }
 
@@ -87,6 +71,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 type peerInfo struct {
 	Name     string `json:"name"`
 	IP       string `json:"ip"`
+	OS       string `json:"os"`
 	Status   string `json:"status"`
 	LastSync string `json:"last_sync"`
 }
@@ -117,61 +102,35 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		hostname = "self"
 	}
 	selfOS := runtime.GOOS
-	// Prefer roster if available (YYP-044/046)
-	if s.roster != nil {
-		peers := s.roster.Peers()
-		pi := make([]peerInfo, 0, len(peers)+1)
-		// Self row first
-		pi = append(pi, peerInfo{Name: hostname, IP: selfIPStr, Status: "online", LastSync: "just now"})
-		for _, p := range peers {
-			if p.IP.String() == selfIPStr {
-				continue
-			}
-			var status string
-			if p.Online {
-				if p.Participating {
-					status = "online"
-				} else {
-					status = "not installed"
-				}
-			} else if p.Participating {
-				status = "offline"
+	peers := s.roster.Peers()
+	pi := make([]peerInfo, 0, len(peers)+1)
+	pi = append(pi, peerInfo{Name: hostname, IP: selfIPStr, OS: selfOS, Status: "online", LastSync: "just now"})
+	for _, p := range peers {
+		if p.IP.String() == selfIPStr {
+			continue
+		}
+		var status string
+		if p.Online {
+			if p.Participating {
+				status = "online"
 			} else {
 				status = "not installed"
 			}
-			lastSync := "never"
-			if !p.LastSync.IsZero() {
-				lastSync = time.Since(p.LastSync).Round(time.Second).String() + " ago"
-				if time.Since(p.LastSync) < time.Minute {
-					lastSync = "just now"
-				}
-			} else if p.Online && p.Participating {
-				lastSync = "never"
-			}
-			pi = append(pi, peerInfo{Name: p.Name, IP: p.IP.String(), Status: status, LastSync: lastSync})
-		}
-		resp := stateResp{Enabled: enabled, Self: &selfInfo{IP: selfIPStr, Name: hostname, OS: selfOS}, Peers: pi}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-	peers, _ := tsnet.Peers(r.Context())
-	pi := make([]peerInfo, 0, len(peers))
-	for _, p := range peers {
-		status := "offline"
-		if p.Online {
-			status = "online"
+		} else if p.Participating {
+			status = "offline"
+		} else {
+			status = "not installed"
 		}
 		lastSync := "never"
-		if !p.LastSeen.IsZero() {
-			lastSync = time.Since(p.LastSeen).Round(time.Second).String() + " ago"
-			if p.Online {
+		if !p.LastSync.IsZero() {
+			lastSync = time.Since(p.LastSync).Round(time.Second).String() + " ago"
+			if time.Since(p.LastSync) < time.Minute {
 				lastSync = "just now"
 			}
-		} else if p.Online {
-			lastSync = "just now"
+		} else if p.Online && p.Participating {
+			lastSync = "never"
 		}
-		pi = append(pi, peerInfo{Name: p.Name, IP: p.IP.String(), Status: status, LastSync: lastSync})
+		pi = append(pi, peerInfo{Name: p.Name, IP: p.IP.String(), OS: p.OS, Status: status, LastSync: lastSync})
 	}
 	resp := stateResp{Enabled: enabled, Self: &selfInfo{IP: selfIPStr, Name: hostname, OS: selfOS}, Peers: pi}
 	w.Header().Set("Content-Type", "application/json")

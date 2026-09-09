@@ -46,9 +46,8 @@ func main() {
 
 	peerSrv := peer.New(st, "dev")
 	rstr := roster.New(ctx)
-	eng := sync.NewWithRoster(st, peerSrv, rstr)
-	uiSrv := ui.NewWithStoreAndRoster(eng, st, rstr)
-	// also serve roster to mobile clients via peer
+	eng := sync.New(st, peerSrv, rstr)
+	uiSrv := ui.New(eng, st, rstr)
 	peerSrv.SetRoster(rstr)
 
 	// Run servers

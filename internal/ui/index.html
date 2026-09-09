@@ -39,7 +39,7 @@ a.github:hover{color:var(--fg)}
 </div>
 </header>
 <table aria-label="Devices">
-<thead><tr><th>DEVICE</th><th>TAILSCALE IP</th><th>STATUS</th><th>LAST SYNC</th></tr></thead>
+<thead><tr><th>DEVICE</th><th>TAILSCALE IP</th><th>OS</th><th>STATUS</th><th>LAST SYNC</th></tr></thead>
 <tbody id="tbody"></tbody>
 </table>
 <details style="margin-top:24px">
@@ -60,11 +60,15 @@ async function fetchState(){
     (s.peers||[]).forEach(p=>{
       const tr=document.createElement('tr');
       if(p.status==="not installed") tr.style.opacity="0.5";
-      tr.innerHTML=`<td>${p.name}</td><td>${p.ip}</td><td><span class="status">${p.status}</span></td><td>${p.last_sync}</td>`;
+      const tdName=document.createElement('td'); tdName.textContent=p.name; tr.appendChild(tdName);
+      const tdIp=document.createElement('td'); tdIp.textContent=p.ip; tr.appendChild(tdIp);
+      const tdOs=document.createElement('td'); tdOs.textContent=p.os||""; tr.appendChild(tdOs);
+      const tdStatus=document.createElement('td'); const span=document.createElement('span'); span.className="status"; span.textContent=p.status; tdStatus.appendChild(span); tr.appendChild(tdStatus);
+      const tdSync=document.createElement('td'); tdSync.textContent=p.last_sync; tr.appendChild(tdSync);
       tbody.appendChild(tr);
     });
     if((s.peers||[]).length===0){
-      const tr=document.createElement('tr'); tr.innerHTML='<td colspan="4" style="color:var(--muted)">No peers online</td>'; tbody.appendChild(tr);
+      const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=5; td.style.color="var(--muted)"; td.textContent="No peers online"; tr.appendChild(td); tbody.appendChild(tr);
     }
   }catch(e){ /* ignore */ }
 }

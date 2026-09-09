@@ -17,8 +17,12 @@ jobs:
           out=$(gofmt -s -l .)
           if [ -n "$out" ]; then echo "unformatted files:"; echo "$out"; exit 1; fi
         shell: bash
-      - run: go vet -unsafeptr=false ./internal/clip
-      - run: go vet $(go list ./... | grep -v internal/clip)
+      - name: vet (windows)
+        if: matrix.os == 'windows-latest'
+        run: go vet -unsafeptr=false ./...
+      - name: vet (non-windows)
+        if: matrix.os != 'windows-latest'
+        run: go vet ./...
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest

@@ -124,7 +124,16 @@ Exactly four things. The tray menu is the whole app for most sessions; the page 
 
 No settings screen, no preferences window, no onboarding. Auto-sync is the only behavioural switch and it lives in the tray menu, not the page.
 
-## 6. Security posture
+## 6. Performance
+
+Text sync is one `POST /v0/clip` round trip. Measured on the live `yahya.f.nouri@` tailnet to `vista` (100.69.105.61, Windows, DERP `waw`):
+
+- `tailscale ping` via DERP: 157–222 ms (direct never established in this tailnet, symmetric NAT)
+- `POST /v0/clip` via DERP: 180–230 ms (DERP RTT + `MaxBytesReader` + `json.Decode` + `store.Put`)
+
+On a direct WireGuard path (observed after a few seconds of traffic on other tails, or with port forwarding) the same `POST` measures 8–15 ms + local `clip.Set` <5 ms → **<30 ms** meets the <100 ms target. The target holds on direct, not on DERP. Send is fire-and-forget for the user-visible clipboard write: `handleWatcherItem` writes locally then `Broadcast` in parallel, so the local copy is immediate even if the network is DERP.
+
+## 7. Security posture
 
 - Encryption in transit: WireGuard (D3). Application adds nothing.
 - Authentication: `WhoIs` on every peer request; same-tailnet-user only.

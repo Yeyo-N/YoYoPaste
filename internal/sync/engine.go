@@ -26,19 +26,12 @@ type Engine struct {
 	enabled bool
 }
 
-// New creates an engine. Enabled defaults to true.
-func New(st *store.Store, ps *peer.Server) *Engine {
-	e := &Engine{store: st, peerSrv: ps, enabled: true}
+// New creates an engine. Enabled defaults to true. Roster is required (YYP-054).
+func New(st *store.Store, ps *peer.Server, r *roster.Roster) *Engine {
+	e := &Engine{store: st, peerSrv: ps, roster: r, enabled: true}
 	if ps != nil {
 		ps.SetEnabledFunc(e.Enabled)
 	}
-	return e
-}
-
-// NewWithRoster creates an engine with a roster for participant filtering.
-func NewWithRoster(st *store.Store, ps *peer.Server, r *roster.Roster) *Engine {
-	e := New(st, ps)
-	e.roster = r
 	return e
 }
 
@@ -82,9 +75,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	inbound := e.subscribeInbound(ctx)
 	go e.outboxLoop(ctx)
-	if e.roster != nil {
-		go e.roster.Start(ctx)
-	}
+	go e.roster.Start(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -124,23 +115,9 @@ func (e *Engine) outboxLoop(ctx context.Context) {
 }
 
 func (e *Engine) drainOutbox(ctx context.Context) {
-	var online map[string]tsnet.Peer
-	if e.roster != nil {
-		online = make(map[string]tsnet.Peer)
-		for _, rp := range e.roster.Participants() {
-			online[rp.ID] = tsnet.Peer{ID: rp.ID, Name: rp.Name, OS: rp.OS, IP: rp.IP, Online: rp.Online}
-		}
-	} else {
-		peers, err := tsnet.Peers(ctx)
-		if err != nil {
-			return
-		}
-		online = make(map[string]tsnet.Peer)
-		for _, p := range peers {
-			if p.Online {
-				online[p.ID] = p
-			}
-		}
+	online := make(map[string]tsnet.Peer)
+	for _, rp := range e.roster.Participants() {
+		online[rp.ID] = tsnet.Peer{ID: rp.ID, Name: rp.Name, OS: rp.OS, IP: rp.IP, Online: rp.Online}
 	}
 	for peerID, p := range online {
 		entries, err := e.store.ListOutbox(peerID)
@@ -166,9 +143,7 @@ func (e *Engine) drainOutbox(ctx context.Context) {
 				continue
 			}
 			_ = e.store.RemoveOutbox(entry.ItemID, peerID)
-			if e.roster != nil {
-				e.roster.MarkSynced(p.ID, p.IP)
-			}
+			e.roster.MarkSynced(p.ID, p.IP)
 		}
 	}
 }
@@ -190,47 +165,24 @@ func (e *Engine) handleWatcherItem(ctx context.Context, it store.Item) error {
 	if err := e.store.Put(it); err != nil {
 		return err
 	}
-	// Use roster if available to only target participants (YYP-044)
 	var targets []tsnet.Peer
-	if e.roster != nil {
-		for _, rp := range e.roster.Participants() {
-			targets = append(targets, tsnet.Peer{ID: rp.ID, Name: rp.Name, OS: rp.OS, IP: rp.IP, Online: rp.Online})
+	for _, rp := range e.roster.Participants() {
+		targets = append(targets, tsnet.Peer{ID: rp.ID, Name: rp.Name, OS: rp.OS, IP: rp.IP, Online: rp.Online})
+	}
+	for _, rp := range e.roster.Peers() {
+		if rp.Participating && !rp.Online {
+			_ = e.store.AddOutbox(it.ID, rp.ID)
 		}
-		// Also queue for offline participants
-		for _, rp := range e.roster.Peers() {
-			if rp.Participating && !rp.Online {
-				_ = e.store.AddOutbox(it.ID, rp.ID)
-			}
-		}
-		if len(targets) == 0 {
-			return nil
-		}
-	} else {
-		peers, err := tsnet.Peers(ctx)
-		if err != nil {
-			slog.Warn("peers unavailable, queuing outbox", "err", err)
-			return nil
-		}
-		if len(peers) == 0 {
-			return nil
-		}
-		for _, p := range peers {
-			if p.Online {
-				targets = append(targets, p)
-			} else {
-				_ = e.store.AddOutbox(it.ID, p.ID)
-			}
-		}
-		if len(targets) == 0 {
-			return nil
-		}
+	}
+	if len(targets) == 0 {
+		return nil
 	}
 	errs := peer.Broadcast(ctx, targets, it)
 	for i, err := range errs {
 		if err != nil {
 			_ = e.store.AddOutbox(it.ID, targets[i].ID)
 			slog.Warn("broadcast failed, queued", "peer", targets[i].Name, "err", err)
-		} else if e.roster != nil {
+		} else {
 			e.roster.MarkSynced(targets[i].ID, targets[i].IP)
 		}
 	}

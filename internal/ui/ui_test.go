@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Yeyo-N/YoYoPaste/internal/roster"
 	"github.com/Yeyo-N/YoYoPaste/internal/tsnet"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
@@ -45,7 +46,7 @@ func TestStateAndToggle(t *testing.T) {
 	defer tsnet.ResetClient()
 
 	eng := &stubEngine{enabled: false}
-	srv := New(eng)
+	srv := New(eng, nil, roster.New(context.Background()))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -96,10 +97,8 @@ func TestStateAndToggle(t *testing.T) {
 }
 
 func TestLocalOnlyBinding(t *testing.T) {
-	// Verify that httptest server (which binds to 127.0.0.1) works, but conceptually the real server binds only to 127.0.0.1.
-	// This test asserts that a request to Tailscale IP would not reach handler - we simulate by checking that handler itself doesn't check remoteAddr.
 	eng := &stubEngine{}
-	srv := New(eng)
+	srv := New(eng, nil, roster.New(context.Background()))
 	handler := srv.Handler()
 	// Direct handler request (simulating localhost) should succeed
 	req := httptest.NewRequest("GET", "/api/state", nil)
@@ -119,7 +118,7 @@ func TestPeersInState(t *testing.T) {
 	})
 	defer tsnet.ResetClient()
 	eng := &stubEngine{enabled: true}
-	srv := New(eng)
+	srv := New(eng, nil, roster.New(context.Background()))
 	req := httptest.NewRequest("GET", "/api/state", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)

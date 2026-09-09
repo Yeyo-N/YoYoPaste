@@ -26,25 +26,24 @@ type Peer struct {
 
 // Roster caches probed peers.
 type Roster struct {
-	mu    sync.RWMutex
-	peers map[string]*Peer // keyed by ID
+	mu          sync.RWMutex
+	peers       map[string]*Peer // keyed by ID
+	absentSince map[string]time.Time
 }
 
-// New creates a roster and does an initial refresh.
+// New creates a roster without blocking startup (YYP-054).
 func New(ctx context.Context) *Roster {
-	r := &Roster{peers: make(map[string]*Peer)}
-	_ = r.Refresh(ctx)
+	r := &Roster{peers: make(map[string]*Peer), absentSince: make(map[string]time.Time)}
 	return r
 }
 
-// Refresh probes all same-user peers via /v0/hello with 2s timeout, in parallel, and updates cache.
-// It preserves LastSync for peers that remain and marks offline peers as not online but keeps them.
+// Refresh probes same-user peers via /v0/hello and updates cache.
+// It skips offline peers for probing and evicts absent peers after 5 min.
 func (r *Roster) Refresh(ctx context.Context) error {
 	peers, err := tsnet.Peers(ctx)
 	if err != nil {
 		return err
 	}
-	// Build a map of existing to preserve LastSync
 	r.mu.RLock()
 	existing := make(map[string]*Peer, len(r.peers))
 	for k, v := range r.peers {
@@ -61,10 +60,14 @@ func (r *Roster) Refresh(ctx context.Context) error {
 	results := make(chan result, len(peers))
 	var wg sync.WaitGroup
 	for _, p := range peers {
+		if !p.Online {
+			results <- result{peer: p, ok: false}
+			continue
+		}
 		wg.Add(1)
 		go func(p tsnet.Peer) {
 			defer wg.Done()
-			hello, ok := probeHello(p)
+			hello, ok := probeHello(ctx, p)
 			results <- result{peer: p, hello: hello, ok: ok}
 		}(p)
 	}
@@ -92,6 +95,9 @@ func (r *Roster) Refresh(ctx context.Context) error {
 				peer.Version = h
 			}
 			if h, ok := res.hello["name"]; ok && h != "" {
+				if len(h) > 64 {
+					h = h[:64]
+				}
 				peer.Name = h
 			}
 			if h, ok := res.hello["os"]; ok && h != "" {
@@ -110,12 +116,31 @@ func (r *Roster) Refresh(ctx context.Context) error {
 		newPeers[id] = peer
 	}
 
-	// Preserve peers that went offline but were previously known (so roster survives offline/return)
-	// If a peer was in existing but not in new tsnet.Peers (e.g., went offline and not returned by Peers), keep it as offline
+	// Preserve peers that went offline but were previously known for a grace period, then evict
+	now := time.Now()
 	for id, ex := range existing {
 		if _, ok := newPeers[id]; !ok {
-			ex.Online = false
+			if ex.Online {
+				// Just went missing, mark time
+				if r.absentSince == nil {
+					r.absentSince = make(map[string]time.Time)
+				}
+				if _, seen := r.absentSince[id]; !seen {
+					r.absentSince[id] = now
+				}
+				ex.Online = false
+			}
+			// Evict after 5 minutes of absence
+			if since, ok := r.absentSince[id]; ok && now.Sub(since) > 5*time.Minute {
+				delete(r.absentSince, id)
+				continue
+			}
 			newPeers[id] = ex
+		} else {
+			// Present again, clear absent
+			if r.absentSince != nil {
+				delete(r.absentSince, id)
+			}
 		}
 	}
 
@@ -125,13 +150,17 @@ func (r *Roster) Refresh(ctx context.Context) error {
 	return nil
 }
 
-func probeHello(p tsnet.Peer) (map[string]string, bool) {
+func probeHello(ctx context.Context, p tsnet.Peer) (map[string]string, bool) {
 	if !p.IP.IsValid() {
 		return nil, false
 	}
 	url := fmt.Sprintf("http://%s:8383/v0/hello", p.IP.String())
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, false
 	}
@@ -183,7 +212,9 @@ func (r *Roster) MarkSynced(id string, ip netip.Addr) {
 }
 
 // Start launches a 30s ticker to refresh the roster until ctx is cancelled.
+// It does an initial refresh immediately (but not blocking New).
 func (r *Roster) Start(ctx context.Context) {
+	_ = r.Refresh(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Yeyo-N/YoYoPaste/internal/peer"
+	"github.com/Yeyo-N/YoYoPaste/internal/roster"
 	"github.com/Yeyo-N/YoYoPaste/internal/store"
 	"github.com/Yeyo-N/YoYoPaste/internal/tsnet"
 	"tailscale.com/client/tailscale/apitype"
@@ -31,7 +32,8 @@ func TestDedupeStopsLoop(t *testing.T) {
 	st, _ := store.Open(dir)
 	defer func() { _ = store.Close(st) }()
 	ps := peer.New(st, "test")
-	eng := New(st, ps)
+	rstr := roster.New(context.Background())
+	eng := New(st, ps, rstr)
 	data := []byte("hello")
 	h := sha256.Sum256(data)
 	sha := fmt.Sprintf("%x", h[:])
@@ -62,7 +64,8 @@ func TestOutboxDirect(t *testing.T) {
 	st, _ := store.Open(dir)
 	defer func() { _ = store.Close(st) }()
 	ps := peer.New(st, "test")
-	_ = New(st, ps)
+	rstr := roster.New(context.Background())
+	_ = New(st, ps, rstr)
 	st.Put(store.Item{ID: "id1", Kind: "text", SHA256: "sha1", Size: 1})
 	_ = st.AddOutbox("id1", "peer1")
 	entries, _ := st.ListOutbox("peer1")
