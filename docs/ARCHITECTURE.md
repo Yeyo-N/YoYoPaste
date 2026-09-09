@@ -137,6 +137,6 @@ On a direct WireGuard path (observed after a few seconds of traffic on other tai
 
 - Encryption in transit: WireGuard (D3). Application adds nothing.
 - Authentication: `WhoIs` on every peer request; same-tailnet-user only.
-- At rest: blob directory and SQLite file are `0600`, inside the OS per-user app-support dir. Full-disk encryption is the platform's job — a passphrase we store next to the data protects nothing.
+- At rest: on Unix the blob directory is `0700` and SQLite file is `0600` inside the OS per-user app-support dir; on Windows the per-user `%LOCALAPPDATA%\YoYoPaste` directory is ACL-restricted to the current user by the OS and `os.Chmod` is skipped (Windows `chmod` only toggles read-only). Full-disk encryption is the platform's job — a passphrase we store next to the data protects nothing.
 - Zero telemetry. No analytics, no crash reporting, no update ping. The only outbound host is a tailnet peer.
 - Permissions requested: clipboard access, and on macOS the Accessibility/pasteboard prompt. Nothing else.

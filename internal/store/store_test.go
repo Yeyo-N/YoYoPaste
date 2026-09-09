@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -17,13 +18,15 @@ func TestOpenAndPut(t *testing.T) {
 	}
 	defer Close(s)
 
-	// check db file mode 0600
-	info, err := os.Stat(dir + "/yoyopaste.db")
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("db perm %o want 0600", info.Mode().Perm())
+	// check db file mode 0600 on Unix; on Windows rely on %LOCALAPPDATA% ACL (YYP-056)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dir + "/yoyopaste.db")
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("db perm %o want 0600", info.Mode().Perm())
+		}
 	}
 
 	it := Item{ID: "01J8Z", Kind: "text", Mime: "text/plain", Name: "", Size: 5, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("hello"))), Origin: "test", Created: time.Now(), Inline: []byte("hello")}

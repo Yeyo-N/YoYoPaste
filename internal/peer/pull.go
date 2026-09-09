@@ -116,19 +116,24 @@ func verifyAndFinalize(partPath, finalPath, expectedSHA string, expectedSize int
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
 	fi, _ := f.Stat()
 	if fi.Size() != expectedSize {
+		_ = f.Close()
 		return fmt.Errorf("size mismatch %d != %d", fi.Size(), expectedSize)
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
+		_ = f.Close()
 		return err
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != expectedSHA {
+		_ = f.Close()
 		_ = os.Remove(partPath)
 		return fmt.Errorf("sha256 mismatch got %s want %s", got, expectedSHA)
+	}
+	if err := f.Close(); err != nil {
+		return err
 	}
 	return os.Rename(partPath, finalPath)
 }

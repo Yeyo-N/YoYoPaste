@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,31 +32,32 @@ type Store struct {
 	putCount int
 }
 
-// Open creates dir 0700, opens db file 0600, migrates.
+// Open creates dir 0700, opens db file 0600 on Unix, relies on %LOCALAPPDATA% ACL on Windows (YYP-056).
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir store dir: %w", err)
 	}
-	// Ensure dir mode 0700 (MkdirAll may leave existing perms)
-	if err := os.Chmod(dir, 0700); err != nil {
-		return nil, fmt.Errorf("chmod store dir: %w", err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0700); err != nil {
+			return nil, fmt.Errorf("chmod store dir: %w", err)
+		}
 	}
 	dbPath := filepath.Join(dir, "yoyopaste.db")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// Restrict to single connection for SQLite
 	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	// Ensure file mode 0600
-	if err := os.Chmod(dbPath, 0600); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("chmod db: %w", err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dbPath, 0600); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("chmod db: %w", err)
+		}
 	}
 	return &Store{db: db, dir: dir}, nil
 }
