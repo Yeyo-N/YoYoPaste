@@ -772,6 +772,146 @@ than a bug.
 
 ---
 
+# Phase 2.9 — Reopened again
+
+### YYP-042c · The vet exclusion does not work
+**P0 · S · Ready · deps: none · skills: Go**
+
+YYP-042b split the CI step into `go vet -unsafeptr=false ./internal/clip` plus
+`go vet $(go list ./... | grep -v internal/clip)`. The second command still fails:
+
+```
+$ GOOS=windows go vet $(go list ./... | grep -v internal/clip)
+internal/clip/clip_windows.go:114:42: possible misuse of unsafe.Pointer
+internal/clip/clip_windows.go:161:28: possible misuse of unsafe.Pointer
+exit status 1
+```
+
+`go vet` analyses dependencies to compute facts and surfaces their diagnostics,
+so excluding a package from the argument list does not exclude it from the
+output. `internal/sync` imports `internal/clip`, and that is enough.
+
+**Fix** Drop the split. Run `go vet -unsafeptr=false ./...` on the Windows job
+only; keep plain `go vet ./...` on macOS and Ubuntu, where `clip_windows.go` is
+excluded by build tag and the check stays fully strict.
+
+Also narrow `.golangci.yml`: it currently disables `unsafeptr` for the entire
+repo. Scope it to `internal/clip` via an `exclude-rules` path entry, matching the
+decision in YYP-042b — the exemption is for Win32 handle memory, not for
+everything.
+
+**Acceptance** All three CI jobs green, and an unsafeptr misuse added to any
+package other than `internal/clip` still fails the build. **Verify with
+`GOOS=windows go vet` locally before pushing.**
+
+---
+
+### YYP-043 · Still open — now plausible but unverified
+**P0 · S · Ready · deps: none · skills: GitHub Actions**
+
+`install-mode: goinstall` is the right idea: it builds golangci-lint with the
+CI toolchain instead of downloading a binary built against Go 1.24. But it has
+never run — the change was never pushed, so the linter's first successful
+execution is still ahead of us.
+
+**Acceptance** A CI log showing golangci-lint running and reporting. Whatever it
+reports is in scope for this task.
+
+---
+
+### YYP-041c · The paste still has not happened
+**P1 · S · Ready · deps: 042c · skills: manual testing**
+
+`docs/VERIFY_041b.md` is a runbook, not a verification. It documents the steps to
+take on `vista` and then says "Full clipboard paste on `vista` requires manual
+run as above" and "One measured number will be recorded after the Notepad paste".
+Taildrop delivery of the binary is confirmed; nothing was run.
+
+It also asserts `golangci-lint 0 (after YYP-042b)`, which cannot be true — the
+linter has never completed successfully on any platform.
+
+**Fix** Run the binary on `vista`. Copy on the Mac, paste in Notepad, then the
+reverse. Record what actually happened.
+**Acceptance** Two round trips and one real measured latency. If it does not
+work, that result is just as valuable — write down what broke.
+
+---
+
+### YYP-051 · The DERP path may miss the <100 ms target
+**P1 · M · Ready · deps: 041c · skills: Go, Tailscale**
+
+`VERIFY_041b.md` measures `tailscale ping` to `vista` at **157–222 ms via
+DERP(waw)**, then concludes text sync is "still <100 ms". Its own number
+contradicts that: one `POST /v0/clip` costs a full round trip, so over DERP the
+floor is the DERP RTT. The target only holds on a direct connection.
+
+This is a real finding, not a mistake to paper over. Tailscale usually upgrades
+to direct after a few seconds of traffic; if it does not (symmetric NAT), DERP is
+the steady state.
+
+**Fix** Measure the actual `POST /v0/clip` round trip on the live tailnet, before
+and after direct-path establishment. If DERP is the common case, either say so
+honestly in the README or make the send fire-and-forget so user-visible latency
+is the local clipboard write, not the network.
+**Acceptance** A measured number for both paths, and either a met target or an
+amended one in ARCHITECTURE.md §Performance.
+
+---
+
+### YYP-052 · Peer-supplied names are injected into the UI as HTML
+**P1 · S · Ready · deps: none · skills: Go, JS**
+
+`roster.Refresh` overwrites a peer's name with the `name` field from that peer's
+own `/v0/hello` response. `index.html` then renders it with
+`tr.innerHTML = \`<td>${p.name}</td>...\``.
+
+Before YYP-044 the table showed names from Tailscale's status. Now a peer
+controls that string, so a compromised or malicious same-user device can return
+`<img src=x onerror=...>` as its name and execute script in the local UI page.
+The blast radius is small — loopback page, same-user tailnet — but this is
+untrusted remote input rendered as markup, and STYLE.md does not allow
+simplifying away validation at a trust boundary.
+
+**Fix** Build the row with `textContent` / `createElement` instead of
+`innerHTML`. Optionally cap name length in the roster.
+**Acceptance** A peer whose `/v0/hello` returns `<script>alert(1)</script>` as
+its name shows that text literally in the table and executes nothing.
+
+---
+
+### YYP-053 · OS is collected but never shown
+**P1 · S · Ready · deps: none · skills: Go, HTML**
+
+The requirement was that the app recognise every device's **IP and OS** at
+startup. The roster collects `OS` and `/v0/peers` returns it, but `peerInfo` in
+`internal/ui/server.go` has no OS field, so `/api/state` drops it and the table
+never displays it.
+
+**Fix** Add `os` to `peerInfo` and a column to the table.
+**Acceptance** The device table shows the OS of every device, participating or not.
+
+---
+
+### YYP-054 · Roster cleanups
+**P2 · M · Ready · deps: none · skills: Go**
+
+- **Removed devices are never evicted.** `Refresh` re-adds any previously known
+  peer that is missing from `tsnet.Peers`, marked offline. A device removed from
+  the tailnet stays in the roster and the UI table forever. Evict after a period
+  of absence.
+- `New(ctx)` refreshes synchronously, so startup blocks on the slowest probe —
+  up to 2 s against the <2 s startup budget. Refresh in the background and let
+  the first `/api/state` report "discovering".
+- `probeHello` ignores its caller's context and probes peers already known to be
+  offline. Pass `ctx` and skip offline peers.
+- `handleWatcherItem` and `handleState` both keep a full non-roster fallback
+  branch, but `main.go` always constructs a roster, so ~40 lines in two files can
+  never execute. Delete them; make the roster a required argument.
+
+**Ponytail** This is a deletion task. Net negative diff.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
