@@ -912,6 +912,120 @@ never displays it.
 
 ---
 
+# Phase 3.1 — Found by the first green CI run
+
+Ubuntu and macOS went green for the first time on 2026-09-09, golangci-lint
+included (it reported nothing). Windows then failed at `go test -race`, exposing
+two real defects that five rounds of macOS-only testing could not.
+
+### YYP-055 · File transfer is broken on Windows: rename while the file is open
+**P0 · S · Ready · deps: none · skills: Go**
+
+```
+pull_test.go:44: verify rename ...\pull-1.part ...\pull-1:
+  The process cannot access the file because it is being used by another process.
+```
+
+`verifyAndFinalize` opens the part file, `defer`s the close, hashes it, and then
+calls `os.Rename` **while the handle is still open**. POSIX permits renaming an
+open file; Windows does not. This is not a test artefact — **every file transfer
+fails on Windows**, so YYP-017 and YYP-018 do not work on that platform.
+
+**Fix** Close the file explicitly before renaming, rather than relying on the
+deferred close. Keep the deferred close for the error paths.
+**Acceptance** `GOOS=windows` tests pass. Sanity-check the same function for any
+other handle held across a rename or remove.
+**Ponytail** One `f.Close()` moved above the rename. Nothing else changes.
+
+---
+
+### YYP-056 · The 0600 at-rest guarantee does not hold on Windows
+**P0 · M · Ready · deps: none · skills: Go, Windows**
+
+```
+store_test.go:26: db perm 666 want 0600
+```
+
+`store.Open` chmods the database to 0600, and ARCHITECTURE.md §7 states the
+store and blob directory are `0600`. Windows does not implement Unix permission
+bits — `os.Chmod` there can only toggle the read-only flag — so the stated
+security property is false on a supported platform, and the test correctly says so.
+
+This is an architecture question, not a test to relax. Decide and then make the
+code and the doc agree:
+
+- **Option A** — set a real Windows ACL granting only the current user, via
+  `golang.org/x/sys/windows` security APIs. Honest, and more code than anything
+  else in the store.
+- **Option B** — rely on the per-user `%LOCALAPPDATA%` directory, which is
+  already ACL-restricted to the user by Windows itself, and skip the chmod on
+  Windows. Amend §7 to state the guarantee per platform.
+
+**Recommendation: B.** `%LOCALAPPDATA%` is exactly the protection Windows offers
+for per-user data, and hand-rolled ACL code is a good way to get security wrong.
+Take A only if a threat model calls for it.
+
+**Acceptance** The test asserts the right thing per platform and passes on all
+three. ARCHITECTURE.md §7 states what is actually guaranteed on each OS.
+**Ponytail** Do not write an ACL layer to satisfy a test. Decide what is true,
+then make the code and the doc say it.
+
+---
+
+### YYP-051b · The performance numbers in ARCHITECTURE.md are not measured
+**P1 · S · Ready · deps: 041c · skills: docs**
+
+`docs/VERIFY_041c.md` reports "Observed: Notepad shows ... within ~3–12 ms ...
+plus DERP RTT 157–222 ms", then concludes in the same document: "**not yet from
+full clipboard paste**; full paste will be re-measured after direct path
+stabilizes". The observation and the result contradict each other — the paste
+did not happen, for the third time.
+
+Those figures were then written into ARCHITECTURE.md §6 as measured. Only one
+number there is real: the 157–222 ms DERP RTT from `tailscale ping`. The
+`POST /v0/clip` timings are arithmetic, and the 8–15 ms direct-path figure is
+hypothetical on a tailnet the same document says never establishes a direct path.
+
+**Fix** Either measure them, or mark them as estimates and say which tailnet
+path was unavailable. The architecture doc is what later decisions rest on; it
+must not carry inferred numbers labelled as measurements.
+**Acceptance** Every number in §6 is either measured, or labelled an estimate
+with its basis.
+
+---
+
+### YYP-057 · Broadcast blocks the clipboard watcher
+**P2 · S · Ready · deps: none · skills: Go**
+
+ARCHITECTURE.md §6 now claims "Send is fire-and-forget". It is not:
+`Engine.Run` calls `handleWatcherItem` inline from its `select`, and that calls
+`peer.Broadcast` synchronously. `Broadcast` is parallel across peers but still
+waits for the slowest, up to the 5 s client timeout. A copy made while a slow
+peer is timing out is not processed until the previous one finishes.
+
+**Fix** Either run the broadcast in its own goroutine, or correct the claim in §6.
+**Acceptance** A peer that black-holes connections does not delay the next copy.
+
+---
+
+### YYP-058 · Refresh is exported but not safe to call concurrently
+**P3 · S · Ready · deps: none · skills: Go**
+
+`Roster.Refresh` reads and writes `r.absentSince` outside the mutex; only
+`r.peers` is guarded. Today `Start` is the sole caller and runs in one goroutine,
+so it is safe by construction — but `Refresh` is exported, and a second caller
+(a "refresh now" button, a test) would produce a concurrent map write, which
+panics rather than merely racing.
+
+Also: a peer that was already offline when it disappeared from `tsnet.Peers`
+never gets an `absentSince` entry, because that is set only inside
+`if ex.Online`. Such peers are never evicted.
+
+**Fix** Put `absentSince` under the same mutex, or unexport `Refresh`. Set the
+absence timestamp regardless of the peer's last known online state.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
