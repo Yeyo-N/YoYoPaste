@@ -1026,6 +1026,55 @@ absence timestamp regardless of the peer's last known online state.
 
 ---
 
+# Phase 3.2 — The Windows verification is blocked on access, not code
+
+Diagnosed 2026-09-09 from the Mac against the live tailnet.
+
+**`vista` the host is up and reachable.** `tailscale ping` returns
+`pong ... via DERP(waw) in 156-159ms`, and `tailscale status` shows
+`100.69.105.61 vista yahya.f.nouri@ windows idle`.
+
+**`yoyopasted` on `vista` is not answering.** `curl http://100.69.105.61:8383/v0/hello`
+times out after 5 s. A port known to be closed (9999) times out identically, so
+over DERP we cannot distinguish "not running" from "blocked by the firewall".
+
+Nothing in the code is blocking this. The binary was delivered by Taildrop and
+never started, because **no automated path exists to start a process on that
+machine**: Tailscale SSH does not support Windows as a server, Taildrop only
+copies files, and no RDP or WinRM access is configured. A worker can build and
+ship the binary; it cannot press Enter on `vista`.
+
+### YYP-059 · Choose how `vista` gets driven
+**P0 · decision required from the project owner · deps: none**
+
+Pick one. Everything downstream of YYP-041c waits on this.
+
+- **A — Run it by hand once.** The runbook in `docs/VERIFY_041c.md` is already
+  written and correct. Roughly five minutes at the machine: run the exe, allow it
+  through Windows Defender Firewall, copy on the Mac, paste in Notepad, write down
+  the number. Unblocks YYP-041c and YYP-051b immediately, automates nothing.
+- **B — Enable OpenSSH Server on `vista`** (a built-in Windows optional feature)
+  reachable over the tailnet. A one-time setup, after which any worker can deploy,
+  run, and measure without a human. Best if Windows verification is going to
+  recur — and on current evidence it will.
+- **C — Join the CI runner to the tailnet** with `tailscale/github-action` and an
+  auth key, then run the daemon on the Windows runner. Fully automated, but it
+  tests runner-to-runner, not Mac-to-Windows, and it puts a tailnet auth key in
+  CI secrets.
+
+**Recommendation: B, with A right now to unblock.** B is the only option that
+stops this recurring; A gets the measurement today.
+
+### Expect a second blocker either way
+
+The binary is unsigned, so on first run Windows will likely raise SmartScreen,
+and **Defender Firewall blocks inbound 8383 by default**. Over DERP that failure
+looks exactly like "not running" — the same timeout. Whoever runs it must allow
+the inbound rule, or the paste will fail with no distinguishing symptom.
+Signing is YYP-022's notarization path, still unexercised.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
