@@ -1075,6 +1075,111 @@ Signing is YYP-022's notarization path, still unexercised.
 
 ---
 
+# Phase 3.3 — First live two-machine run (2026-09-09)
+
+`yoyopasted` now runs on `vista` and a clipboard item has crossed from the Mac
+and landed in its history. Findings below, in priority order.
+
+### YYP-060 · The daemon crashes on startup on macOS
+**P0 · S · Ready · deps: none · skills: Go, macOS**
+
+`go run ./cmd/yoyopasted` dies within a second:
+
+```
+SIGTRAP: trace trap ... signal arrived during cgo execution
+fyne.io/systray.nativeLoop(...) systray_darwin.go:69
+created by internal/tray.Run in goroutine 1  tray.go:89
+```
+
+`tray.go:89` starts `systray.Run` in a goroutine, with the comment
+"systray.Run blocks; run in goroutine and wait for ctx". On macOS that is exactly
+what breaks it: AppKit requires the `NSApplication` run loop on the **main**
+thread. The peer and UI servers log "listening" first, so the crash looks like a
+clean start followed by a silent death.
+
+**The Mac has therefore never run this binary successfully**, despite
+`VERIFY_041.md` reporting it as tested.
+
+**Fix** Run `systray.Run` on the main goroutine in `main()` and move the rest of
+the startup into background goroutines — the inversion systray's API expects.
+Add `runtime.LockOSThread` if anything else needs the main thread.
+**Acceptance** `go run ./cmd/yoyopasted` stays up on macOS with the tray icon
+visible, and Ctrl-C still exits 0.
+**Ponytail** Invert the call order; do not add a windowing library to work around it.
+
+---
+
+### YYP-061 · Windows installer, and the identity constraint behind it
+**P0 · L · Ready · deps: 060 · skills: Go, PowerShell, Windows**
+
+Getting `vista` running took a sequence no user should ever perform by hand, and
+one step of it is a hard architectural constraint (**D14**): the daemon must run
+in the session of the user who owns the Tailscale GUI. Started as any other
+account it gets `401 Unauthorized: Tailscale already in use by <user>` from the
+LocalAPI, `SelfIP` fails, and the peer server never binds. **A SYSTEM service
+cannot work.**
+
+The proven-working sequence, verified end to end on `vista`:
+
+1. Place the binary somewhere readable by that user (`C:\ProgramData\YoYoPaste\`).
+2. `Unblock-File` it — Mark-of-the-Web from any download blocks execution.
+3. `New-NetFirewallRule -DisplayName "YoYoPaste peer 8383" -Direction Inbound
+   -Action Allow -Protocol TCP -LocalPort 8383` — **inbound is blocked by default,
+   and over DERP that failure is indistinguishable from "not running"**: both are
+   a timeout, no RST.
+4. Register a scheduled task running as the Tailscale GUI user with an
+   **interactive token** (`schtasks /ru "<DOMAIN\user>" /it`), which needs no
+   stored password, and start it.
+
+**Fix** Ship `scripts/install-windows.ps1` doing exactly the above, with the
+target user detected from the owner of the `tailscale-ipn` process rather than
+hardcoded, and a `/logon` trigger instead of the one-shot task used for testing.
+Ship `scripts/uninstall-windows.ps1` alongside it. Target: one command, no
+questions, per the success criteria.
+
+**Acceptance** A clean Windows machine goes from downloaded binary to a working
+device in one command, with no manual firewall or Task Scheduler steps. The
+script fails loudly with a clear message when Tailscale is not running.
+**Ponytail** PowerShell and `schtasks`, both built in. No MSI toolchain, no
+installer framework, no service wrapper.
+
+---
+
+### YYP-062 · Clean up the test rig on `vista`
+**P1 · S · Ready · deps: 061 · skills: Windows**
+
+Left behind by the manual verification, to be replaced by YYP-061's script:
+
+- scheduled task `YoYoPasteTest` (one-shot, `/st 00:00`, so it warns it may not run)
+- `C:\ProgramData\YoYoPaste\yoyopasted.exe` and `log.txt`
+- `C:\Users\lmin\yoyopasted.exe`
+- firewall rule `YoYoPaste peer 8383` — **keep this one**, the installer needs it
+
+Stop and remove with:
+```
+schtasks /end /tn YoYoPasteTest; schtasks /delete /tn YoYoPasteTest /f
+```
+
+---
+
+### YYP-051b · Closed — numbers are now measured
+**Done · 2026-09-09**
+
+ARCHITECTURE.md §6 carries real figures: `POST /v0/clip` is **316–330 ms** over
+DERP (~160 ms TCP connect + ~160 ms request), against a 156–159 ms
+`tailscale ping` RTT. The <100 ms target **does not hold on DERP** — it is a
+relay round trip. Direct-path numbers remain unmeasured and are no longer quoted.
+
+### YYP-041c · Closed — Mac → Windows verified
+**Done · 2026-09-09**
+
+`/v0/hello` returns `{"name":"deltaco-2740","os":"windows"}`, `/v0/peers` returns
+the roster with correct per-device OS, `authTailnet` admits the same-user Mac,
+and a posted item landed in vista's history. The reverse direction and the
+Notepad paste still need YYP-060 fixed first, since the Mac daemon cannot stay up.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
