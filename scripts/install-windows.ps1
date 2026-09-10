@@ -54,6 +54,15 @@ $destDir = "C:\ProgramData\YoYoPaste"
 $destBin = Join-Path $destDir "yoyopasted.exe"
 Write-Host "Installing to $destBin ..."
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+
+# YYP-066: stop existing task before overwriting the running exe (Windows locks it)
+$taskNameTmp = "YoYoPaste"
+try { schtasks /end /tn $taskNameTmp 2>$null | Out-Null } catch {}
+Start-Sleep -Seconds 1
+for ($i=0; $i -lt 5; $i++) {
+  if (-not (Get-Process -Name "yoyopasted" -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Seconds 1
+}
 Copy-Item -Force $BinaryPath $destBin
 Unblock-File -Path $destBin
 Write-Host "Unblocked $destBin"

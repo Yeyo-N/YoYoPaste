@@ -1353,6 +1353,102 @@ that check cost a full review cycle each.
 
 ---
 
+# Phase 4.0 — Scope change: clipboard only (2026-09-10)
+
+**File transfer is out of scope.** YoYoPaste syncs clipboard text. D4 is
+withdrawn in ARCHITECTURE.md; the blob path, ranged reads, resume, and
+byte-based retention go with it.
+
+Closed as out of scope, no further work: **YYP-016** (blob serving),
+**YYP-017** (blob pull with resume), **YYP-018** (file clipboard integration),
+and Phase 3 as a whole. **YYP-029** (blob GC) is moot.
+
+### YYP-068 · Delete the file-transfer code
+**P0 · M · Ready · deps: none · skills: Go**
+
+Roughly 320 lines of dedicated code plus 42 non-test references. Remove:
+
+- `internal/peer/pull.go` (139), `pull_test.go` (65), `blob_test.go` (117) — delete outright
+- `GET|HEAD /v0/blob/{id}` handlers, `handleBlob`, `handleBlobHead`, `cleanID` in `internal/peer/server.go`
+- `store.Item.BlobPath`, `UpdateBlobPath`, `BlobDir`, the `blob_path` column, and blob removal in `EnforceRetention`
+- the `maxBytes` half of retention — with no blobs, an item count is the only bound that matters
+- `Kind`'s `"file"` variant and the `it.Kind == "file"` branch in `internal/ui/server.go:188`
+- the `sha256` field if it now serves only loop-breaking; keep it if `isRecentDuplicate` still needs it
+
+Keep the `Item.SHA256` dedupe and everything on the text path.
+
+**Acceptance** `go test -race ./...` green, `GOOS=windows go build` clean, and a
+Mac↔Windows text sync still works end to end after the deletion. Diff is strongly
+net-negative.
+**Ponytail** This is the best kind of task. Delete, do not deprecate — no
+feature flag, no `if fileTransferEnabled`.
+
+---
+
+### YYP-069 · Scope the docs and mobile clients to clipboard only
+**P1 · S · Ready · deps: 068 · skills: docs, Swift, Kotlin**
+
+- `README.md` and any feature list: drop file transfer, "any file size", and
+  resume. The pitch is clipboard sync across your devices.
+- Success criteria: "File transfer works with any file size" is withdrawn.
+- **YYP-025** (iOS share extension) and **YYP-049** (Android share target)
+  narrow to text and URLs only — no image or file streaming.
+- `docs/STYLE.md` and `ARCHITECTURE.md` §2 already updated; check for stragglers.
+
+---
+
+# Phase 3.6 — Verification status (2026-09-10)
+
+### Verified live
+- **YYP-063 Windows → Mac**: Mac clipboard primed with a sentinel, copy on
+  `vista`, `pbpaste` returns the copied text. Auto-sync works.
+- **Mac → Windows delivery**: `mac2win-clip-1789042605` reached vista's history.
+- **Direct path exists now**: `tailscale ping` reports
+  `pong from vista via 192.168.1.135:41641 in 42ms` — both machines are on the
+  same LAN. Earlier runs were DERP-only.
+
+### YYP-066 · Reopened — the upgrade still fails
+**P1 · S · Ready · deps: none · skills: PowerShell**
+
+Running `install-windows.ps1` against a *running* daemon still fails:
+
+```
+Copy-Item : ... IOException
+```
+
+The stop logic added at `install-windows.ps1:56` is not taking effect. Proven by
+bisection: running `schtasks /end /tn YoYoPaste` manually over SSH **does** stop
+the process within ~3 s, and re-running the installer with the process already
+stopped **succeeds completely**. So the sequence is right and the in-script
+invocation is not firing.
+
+The likely reason it is invisible: the call is wrapped as
+`try { schtasks /end /tn $taskNameTmp 2>$null | Out-Null } catch {}`, which
+discards both the output and the error.
+
+**Fix** Remove the output suppression and the empty `catch`, let the result be
+seen, and fail loudly if the process is still alive after the poll rather than
+copying anyway.
+**Acceptance** Two consecutive installer runs against a running daemon both
+succeed, and the running exe's timestamp actually changes.
+
+### YYP-070 · Mac → Windows clipboard application is unverified
+**P1 · S · Ready · deps: 066 · skills: manual testing**
+
+Delivery is confirmed (the item is in vista's history), and the reverse direction
+is confirmed via `pbpaste`. What is **not** confirmed is that an inbound item
+reaches the *Windows* clipboard — reading another session's clipboard over SSH did
+not produce a reliable signal, and the daemon's scheduled task no longer redirects
+output, so there is no log to check either.
+
+**Fix** Either press Ctrl+V in Notepad on `vista` once and record the result, or
+add a `-loglevel` / log-file flag so `clip.Set` failures are visible. The second
+is worth having regardless — a silent `clip.Set` failure is exactly the class of
+bug YYP-063 was.
+**Acceptance** Text copied on the Mac pastes on Windows, recorded.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
