@@ -37,23 +37,33 @@ func TestDedupeStopsLoop(t *testing.T) {
 	data := []byte("hello")
 	h := sha256.Sum256(data)
 	sha := fmt.Sprintf("%x", h[:])
+	// Simulate local copy via watcher -> should store
 	it := store.Item{ID: "id1", Kind: "text", Inline: data, SHA256: sha}
-	// first inbound should store and set clipboard (clip stub)
-	if err := eng.handleInbound(it); err != nil {
+	if err := eng.handleWatcherItem(context.Background(), it); err != nil {
 		t.Fatal(err)
 	}
 	n, _ := st.Count()
 	if n != 1 {
-		t.Fatalf("count %d", n)
+		t.Fatalf("count %d want 1 after watcher", n)
 	}
-	// second same sha should be deduped
-	it2 := store.Item{ID: "id2", Kind: "text", Inline: data, SHA256: sha}
+	// Simulate inbound same item from peer (already stored via handleClip) -> should set clipboard, not duplicate store
+	// handleInbound now does not check isRecentDuplicate nor Put, it just sets clipboard if autosync
+	it2 := store.Item{ID: "id1", Kind: "text", Inline: data, SHA256: sha}
 	if err := eng.handleInbound(it2); err != nil {
 		t.Fatal(err)
 	}
 	n, _ = st.Count()
 	if n != 1 {
-		t.Fatalf("dedupe failed %d", n)
+		t.Fatalf("count %d want 1 after inbound (should not double store)", n)
+	}
+	// Second watcher same sha should be deduped (echo loop) — most recent is same sha
+	it3 := store.Item{ID: "id3", Kind: "text", Inline: data, SHA256: sha}
+	if err := eng.handleWatcherItem(context.Background(), it3); err != nil {
+		t.Fatal(err)
+	}
+	n, _ = st.Count()
+	if n != 1 {
+		t.Fatalf("dedupe failed %d want 1 (watcher echo)", n)
 	}
 }
 

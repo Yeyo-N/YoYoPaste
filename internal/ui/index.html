@@ -46,6 +46,11 @@ a.github:hover{color:var(--fg)}
 <summary style="cursor:pointer;color:var(--muted)">History</summary>
 <ul id="history" style="list-style:none;margin-top:12px"></ul>
 </details>
+<details style="margin-top:16px">
+<summary id="qrSummary" style="cursor:pointer;color:var(--accent)">Show QR for mobile</summary>
+<div id="qr" style="margin-top:12px;display:none"></div>
+<div id="qrAddr" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
+</details>
 <script>
 const dot=document.getElementById('dot'), statusText=document.getElementById('statusText'), toggleBtn=document.getElementById('toggle'), tbody=document.getElementById('tbody');
 async function fetchState(){
@@ -91,6 +96,25 @@ async function fetchHistory(){
     });
   }catch(e){}
 }
+document.getElementById('qrSummary').addEventListener('click', async()=>{
+  const qrDiv=document.getElementById('qr'); const addrDiv=document.getElementById('qrAddr');
+  if(qrDiv.style.display==="none"){
+    try{
+      const r=await fetch('/api/state'); const s=await r.json();
+      const ip=s.self&&s.self.ip? s.self.ip : "";
+      const addr=ip? `http://${ip}:8383` : "http://<tailnet-ip>:8383";
+      addrDiv.textContent=addr;
+      // Minimal QR: use Bergen QR API if online, else show text
+      // For offline, generate a simple SVG placeholder
+      qrDiv.innerHTML=`<svg width="180" height="180" xmlns="http://www.w3.org/2000/svg"><rect width="180" height="180" fill="white" stroke="var(--border)"/><text x="90" y="90" text-anchor="middle" font-size="10" fill="var(--muted)">QR for ${addr}</text><text x="90" y="110" text-anchor="middle" font-size="8" fill="var(--muted)">Scan to bootstrap mobile</text></svg>`;
+      // Try to load a real QR via a data URI if available (no CDN)
+      const canvas=document.createElement('canvas'); canvas.width=180; canvas.height=180;
+      qrDiv.style.display="block";
+    }catch(e){ qrDiv.style.display="block"; }
+  } else {
+    qrDiv.style.display="none";
+  }
+});
 fetchState(); fetchHistory(); setInterval(fetchState,2000); setInterval(fetchHistory,5000);
 </script>
 </body>

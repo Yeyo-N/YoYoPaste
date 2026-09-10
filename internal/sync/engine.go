@@ -177,9 +177,8 @@ func (e *Engine) handleWatcherItem(ctx context.Context, it store.Item) error {
 	if len(targets) == 0 {
 		return nil
 	}
-	// Fire-and-forget: don't block the watcher select on the slowest peer (YYP-057)
 	go func(it store.Item, targets []tsnet.Peer) {
-		errs := peer.Broadcast(context.Background(), targets, it)
+		errs := peer.Broadcast(ctx, targets, it)
 		for i, err := range errs {
 			if err != nil {
 				_ = e.store.AddOutbox(it.ID, targets[i].ID)
@@ -193,16 +192,9 @@ func (e *Engine) handleWatcherItem(ctx context.Context, it store.Item) error {
 }
 
 func (e *Engine) handleInbound(it store.Item) error {
-	if e.isRecentDuplicate(it.SHA256) {
-		return nil
-	}
 	if !e.Enabled() {
 		return nil
 	}
-	if err := e.store.Put(it); err != nil {
-		return err
-	}
-	// Optionally set clipboard if autosync is on
 	if e.AutosyncEnabled() {
 		if err := clip.Set(it); err != nil {
 			slog.Error("clip set", "err", err)

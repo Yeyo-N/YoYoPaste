@@ -37,23 +37,22 @@ func New(ctx context.Context) *Roster {
 	return r
 }
 
-// Refresh probes the roster. It is safe to call concurrently (YYP-058).
 func (r *Roster) Refresh(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.refreshLocked(ctx)
-}
-
-func (r *Roster) refreshLocked(ctx context.Context) error {
 	peers, err := tsnet.Peers(ctx)
 	if err != nil {
 		return err
 	}
+	r.mu.RLock()
 	existing := make(map[string]*Peer, len(r.peers))
 	for k, v := range r.peers {
 		copied := *v
 		existing[k] = &copied
 	}
+	absentCopy := make(map[string]time.Time, len(r.absentSince))
+	for k, v := range r.absentSince {
+		absentCopy[k] = v
+	}
+	r.mu.RUnlock()
 
 	type result struct {
 		peer  tsnet.Peer
@@ -106,12 +105,10 @@ func (r *Roster) refreshLocked(ctx context.Context) error {
 			if h, ok := res.hello["os"]; ok && h != "" {
 				peer.OS = h
 			}
-			// Preserve LastSync if already existed and participating
 			if ex, ok := existing[id]; ok && ex.LastSync.After(peer.LastSync) {
 				peer.LastSync = ex.LastSync
 			}
 		} else {
-			// Non-participant: keep LastSync if existed
 			if ex, ok := existing[id]; ok {
 				peer.LastSync = ex.LastSync
 			}
@@ -120,28 +117,25 @@ func (r *Roster) refreshLocked(ctx context.Context) error {
 	}
 
 	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for id, ex := range existing {
 		if _, ok := newPeers[id]; !ok {
-			if r.absentSince == nil {
-				r.absentSince = make(map[string]time.Time)
-			}
-			if _, seen := r.absentSince[id]; !seen {
-				r.absentSince[id] = now
+			if _, seen := absentCopy[id]; !seen {
+				absentCopy[id] = now
 			}
 			ex.Online = false
-			if since, ok := r.absentSince[id]; ok && now.Sub(since) > 5*time.Minute {
-				delete(r.absentSince, id)
+			if since, ok := absentCopy[id]; ok && now.Sub(since) > 5*time.Minute {
+				delete(absentCopy, id)
 				continue
 			}
 			newPeers[id] = ex
 		} else {
-			if r.absentSince != nil {
-				delete(r.absentSince, id)
-			}
+			delete(absentCopy, id)
 		}
 	}
-
 	r.peers = newPeers
+	r.absentSince = absentCopy
 	return nil
 }
 
