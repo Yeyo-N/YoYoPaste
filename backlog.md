@@ -1274,6 +1274,85 @@ lifetime.
 
 ---
 
+# Phase 3.5 — Auto-sync works (2026-09-10)
+
+**Milestone: copy on one machine, paste on the other, verified on real hardware.**
+The Mac clipboard was primed with `sentinel-before`, `win2mac-clip-1789040199`
+was copied on `vista`, and `pbpaste` on the Mac returned it. No echo loop, five
+history entries, zero errors in the log.
+
+YYP-063, YYP-064 and YYP-065 are **Done**. Two things came out of the run.
+
+### YYP-066 · The installer cannot upgrade an installed copy
+**P1 · S · Ready · deps: none · skills: PowerShell**
+
+Re-running `install-windows.ps1` over a running daemon fails:
+
+```
+Copy-Item : ... IOException
+FullyQualifiedErrorId : System.IO.IOException,Microsoft.PowerShell.Commands.CopyItemCommand
+```
+
+Windows will not overwrite a running `.exe`. The script handles first install but
+not upgrade, which is the case that will happen far more often. It also failed
+*after* creating directories, so it leaves a half-applied state and — worse — it
+reports the failure in the middle of otherwise successful-looking output.
+
+**Fix** Stop the task before copying: `schtasks /end /tn YoYoPaste` (ignore "not
+running"), wait for the process to exit, copy, then re-register and start. Make
+the script idempotent end to end.
+**Acceptance** Running the installer twice in a row succeeds both times, second
+run picking up the new binary. Verify the running exe's version actually changes.
+
+---
+
+### YYP-067 · Mobile is a sketch, not the delivered tasks
+**P1 · reopens YYP-024, 025, 048, 049, 050 · skills: Swift, Kotlin**
+
+What exists:
+
+```
+ios/YoYoPaste/ContentView.swift                          47 lines
+android/app/src/main/java/com/yoyopaste/MainActivity.kt  58 lines
+```
+
+That is the entire mobile tree. Both files are reasonable sketches of the
+four-element view, and they are worth keeping as a starting point. Neither is a
+buildable app, and several specifics reported as complete are not present:
+
+- **No `ios/YoYoPasteShare`.** The share extension (YYP-025) does not exist —
+  no target, no `NSExtensionItem` handling.
+- **No Xcode project**, no `Info.plist`, no scheme. `ContentView.swift` cannot
+  be compiled or run.
+- **No `AndroidManifest.xml`**, so the reported `ACTION_SEND`/`SEND_MULTIPLE`
+  filters and the foreground-service note do not exist. No `build.gradle`, no
+  `settings.gradle`, no resources — the module cannot be built.
+- **`README.md` contains no mention of Android**, so YYP-050's documentation of
+  the Android 10+ background-clipboard restriction was not written.
+
+**Fix** Treat YYP-024/025 and YYP-048/049/050 as still open. Take one platform at
+a time and finish it to something that builds and runs on a device, rather than
+starting both. iOS first — `iphone-13` is already on the tailnet, though it has
+been offline 87 days.
+
+**Acceptance per platform** The project builds from a clean checkout with a
+documented command, installs on a real device, lists desktop peers from
+`GET /v0/peers`, and sends one item that arrives on a desktop.
+**Ponytail** Do not scaffold both platforms before either one works.
+
+---
+
+### Note on reporting
+
+Three items this round were reported with specifics that do not exist in the tree
+(the iOS share extension, the Android manifest, the README section). Separately,
+last round's report claimed `ssh/scp/winrm all Permission denied` and that the
+binary was not running on `vista`, when SSH works and the daemon was deployed and
+serving. Claims are being verified by running them; specifics that do not survive
+that check cost a full review cycle each.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |
