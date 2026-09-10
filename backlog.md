@@ -1180,6 +1180,100 @@ Notepad paste still need YYP-060 fixed first, since the Mac daemon cannot stay u
 
 ---
 
+# Phase 3.4 — Live bidirectional run (2026-09-10)
+
+Both daemons ran simultaneously for the first time. Mac → Windows and
+Windows → Mac both deliver. One P0 and one regression came out of it.
+
+### YYP-063 · Auto-sync never writes the clipboard — the core feature is broken
+**P0 · S · Ready · deps: none · skills: Go**
+
+Observed live: copying `win-to-mac-1789039183` on `vista` put it in the Mac's
+**history**, but the Mac's actual clipboard still held the previous value.
+`pbpaste` returned the old text. Nothing was logged, because nothing errored.
+
+The cause is an interaction between two correct-looking pieces:
+
+1. `peer.handleClip` stores the item (`server.go`, `store.Put`) **and then**
+   announces it on the SSE hub.
+2. `sync.handleInbound` opens with `isRecentDuplicate(it.SHA256)`, which is
+   `store.Recent(1)` — and that is now the very item `handleClip` just stored.
+
+So every inbound item is judged a duplicate of itself and returns early, before
+`clip.Set`. **No inbound item has ever reached the clipboard on any platform.**
+Sync appears to work because history fills up; the one thing users actually want
+— paste on the other device — does not happen.
+
+This is why the manual paste test would have failed even if the runbook had been
+followed.
+
+**Fix** Delete the `isRecentDuplicate` check and the redundant `store.Put` from
+`handleInbound`; `handleClip` already stored the item. The echo loop stays broken
+by the check in `handleWatcherItem`: when `clip.Set` fires the local watcher, the
+inbound item is `Recent(1)`, so the watcher skips it. Verify that still holds.
+**Acceptance** Copy on A, and B's *clipboard* contains it — assert on
+`clip.Get`/`pbpaste`, not on history. The two-device loop test must still terminate.
+**Ponytail** Net-negative diff: remove the check and the double write.
+
+---
+
+### YYP-064 · The roster lock now covers the whole probe cycle
+**P1 · S · Ready · deps: none · skills: Go**
+
+YYP-058 fixed the `absentSince` race by wrapping the entire refresh:
+
+```go
+func (r *Roster) Refresh(ctx context.Context) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    return r.refreshLocked(ctx)
+}
+```
+
+`refreshLocked` calls `tsnet.Peers` (LocalAPI) and then probes every online peer
+with a 2 s timeout. The write lock is held for all of it, so every 30 seconds
+`Peers()`, `Participants()` and `MarkSynced()` block for up to two seconds.
+`handleWatcherItem` calls `Participants()` on the watcher goroutine, so a copy
+made during a refresh stalls — which partly undoes YYP-057.
+
+The race was real and the fix works; the lock is just too coarse.
+
+**Fix** Probe without the lock, then take it only to swap `peers` and
+`absentSince` together — the original structure, with `absentSince` moved inside
+the same critical section as `peers`.
+**Acceptance** `go test -race ./internal/roster` still clean, and a refresh in
+flight does not block `Participants()`.
+
+---
+
+### YYP-065 · In-flight broadcasts are not cancelled on shutdown
+**P3 · S · Ready · deps: none · skills: Go**
+
+YYP-057's goroutine uses `context.Background()`, so a quit during a send waits on
+the 5 s client timeout instead of cancelling. Pass a context tied to the engine's
+lifetime.
+
+---
+
+### Verified working on real hardware (2026-09-10)
+
+- **YYP-060** — `go run ./cmd/yoyopasted` stays up on macOS. First successful
+  run of the daemon on the Mac; `systray.Run` is on the main goroutine.
+- **YYP-061** — `install-windows.ps1` ran clean on `vista`: detected
+  `IRANVS\yahya.f` from the `tailscale-ipn` owner, staged the binary,
+  unblocked it, reused the firewall rule, registered an on-logon task with an
+  interactive token, and started it. `yoyopasted` came up as the right user,
+  bound to `100.69.105.61:8383`, reachable from the Mac. One command, no questions.
+- **YYP-041c** — real clipboard, both directions. `pbcopy` on the Mac reached
+  vista's history in ~4 s with a valid ULID; `Set-Clipboard` on vista (inside the
+  Tailscale user's session — the Windows clipboard is per-session) reached the
+  Mac's history. Delivery works; applying it to the receiving clipboard does not,
+  which is YYP-063.
+- **YYP-055/056/057** — Windows rename, per-platform at-rest permissions, and
+  non-blocking broadcast all confirmed in code and in the live run.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |

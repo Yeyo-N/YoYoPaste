@@ -17,8 +17,9 @@ type Engine interface {
 	SetAutosync(bool)
 }
 
-// Run starts the systray. Blocks until ctx cancelled or Quit selected.
+// Run starts the systray. Must be called on the main goroutine on macOS (YYP-060).
 func Run(ctx context.Context, engine Engine) {
+	runtime.LockOSThread()
 	onReady := func() {
 		systray.SetTitle("YoYoPaste")
 		updateIcon(engine.Enabled())
@@ -60,7 +61,6 @@ func Run(ctx context.Context, engine Engine) {
 			}
 		}()
 
-		// Poll engine state to reflect web toggle (every 1s)
 		go func() {
 			ticker := timeTick(1)
 			defer ticker.Stop()
@@ -83,19 +83,7 @@ func Run(ctx context.Context, engine Engine) {
 		}()
 	}
 	onExit := func() {}
-
-	// systray.Run blocks; run in goroutine and wait for ctx
-	done := make(chan struct{})
-	go func() {
-		systray.Run(onReady, onExit)
-		close(done)
-	}()
-	select {
-	case <-ctx.Done():
-		systray.Quit()
-		<-done
-	case <-done:
-	}
+	systray.Run(onReady, onExit)
 }
 
 func updateIcon(enabled bool) {

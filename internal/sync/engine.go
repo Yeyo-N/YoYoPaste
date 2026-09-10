@@ -177,15 +177,18 @@ func (e *Engine) handleWatcherItem(ctx context.Context, it store.Item) error {
 	if len(targets) == 0 {
 		return nil
 	}
-	errs := peer.Broadcast(ctx, targets, it)
-	for i, err := range errs {
-		if err != nil {
-			_ = e.store.AddOutbox(it.ID, targets[i].ID)
-			slog.Warn("broadcast failed, queued", "peer", targets[i].Name, "err", err)
-		} else {
-			e.roster.MarkSynced(targets[i].ID, targets[i].IP)
+	// Fire-and-forget: don't block the watcher select on the slowest peer (YYP-057)
+	go func(it store.Item, targets []tsnet.Peer) {
+		errs := peer.Broadcast(context.Background(), targets, it)
+		for i, err := range errs {
+			if err != nil {
+				_ = e.store.AddOutbox(it.ID, targets[i].ID)
+				slog.Warn("broadcast failed, queued", "peer", targets[i].Name, "err", err)
+			} else {
+				e.roster.MarkSynced(targets[i].ID, targets[i].IP)
+			}
 		}
-	}
+	}(it, targets)
 	return nil
 }
 

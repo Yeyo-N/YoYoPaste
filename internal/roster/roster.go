@@ -37,20 +37,23 @@ func New(ctx context.Context) *Roster {
 	return r
 }
 
-// Refresh probes same-user peers via /v0/hello and updates cache.
-// It skips offline peers for probing and evicts absent peers after 5 min.
+// Refresh probes the roster. It is safe to call concurrently (YYP-058).
 func (r *Roster) Refresh(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refreshLocked(ctx)
+}
+
+func (r *Roster) refreshLocked(ctx context.Context) error {
 	peers, err := tsnet.Peers(ctx)
 	if err != nil {
 		return err
 	}
-	r.mu.RLock()
 	existing := make(map[string]*Peer, len(r.peers))
 	for k, v := range r.peers {
 		copied := *v
 		existing[k] = &copied
 	}
-	r.mu.RUnlock()
 
 	type result struct {
 		peer  tsnet.Peer
@@ -116,37 +119,29 @@ func (r *Roster) Refresh(ctx context.Context) error {
 		newPeers[id] = peer
 	}
 
-	// Preserve peers that went offline but were previously known for a grace period, then evict
 	now := time.Now()
 	for id, ex := range existing {
 		if _, ok := newPeers[id]; !ok {
-			if ex.Online {
-				// Just went missing, mark time
-				if r.absentSince == nil {
-					r.absentSince = make(map[string]time.Time)
-				}
-				if _, seen := r.absentSince[id]; !seen {
-					r.absentSince[id] = now
-				}
-				ex.Online = false
+			if r.absentSince == nil {
+				r.absentSince = make(map[string]time.Time)
 			}
-			// Evict after 5 minutes of absence
+			if _, seen := r.absentSince[id]; !seen {
+				r.absentSince[id] = now
+			}
+			ex.Online = false
 			if since, ok := r.absentSince[id]; ok && now.Sub(since) > 5*time.Minute {
 				delete(r.absentSince, id)
 				continue
 			}
 			newPeers[id] = ex
 		} else {
-			// Present again, clear absent
 			if r.absentSince != nil {
 				delete(r.absentSince, id)
 			}
 		}
 	}
 
-	r.mu.Lock()
 	r.peers = newPeers
-	r.mu.Unlock()
 	return nil
 }
 
