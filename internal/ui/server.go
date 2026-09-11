@@ -179,14 +179,12 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	out := make([]histItem, 0, len(items))
 	for _, it := range items {
 		preview := ""
-		if it.Kind == "text" && len(it.Inline) > 0 {
+		if len(it.Inline) > 0 {
 			if len(it.Inline) > 100 {
 				preview = string(it.Inline[:100])
 			} else {
 				preview = string(it.Inline)
 			}
-		} else if it.Kind == "file" {
-			preview = it.Name
 		}
 		out = append(out, histItem{ID: it.ID, Kind: it.Kind, Mime: it.Mime, Name: it.Name, Size: it.Size, SHA256: it.SHA256, Created: it.Created.Format(time.RFC3339), Preview: preview})
 	}

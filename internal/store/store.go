@@ -13,16 +13,15 @@ import (
 
 // Item is a clipboard entry.
 type Item struct {
-	ID       string
-	Kind     string // "text" | "file"
-	Mime     string
-	Name     string
-	Size     int64
-	SHA256   string
-	Origin   string
-	Created  time.Time
-	Inline   []byte
-	BlobPath string
+	ID      string
+	Kind    string // "text" only (file transfer removed per YYP-068)
+	Mime    string
+	Name    string
+	Size    int64
+	SHA256  string
+	Origin  string
+	Created time.Time
+	Inline  []byte
 }
 
 // Store persists items and outbox.
@@ -73,8 +72,7 @@ func migrate(db *sql.DB) error {
 			sha256 TEXT NOT NULL,
 			origin TEXT NOT NULL,
 			created INTEGER NOT NULL,
-			inline BLOB,
-			blob_path TEXT NOT NULL DEFAULT ''
+			inline BLOB
 		);
 		CREATE INDEX IF NOT EXISTS idx_items_sha256 ON items(sha256);
 		CREATE INDEX IF NOT EXISTS idx_items_created ON items(created DESC);
@@ -93,11 +91,9 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	// Migrate existing TEXT created to INTEGER if needed
 	var createdType string
 	err = db.QueryRow(`SELECT type FROM pragma_table_info('items') WHERE name='created'`).Scan(&createdType)
 	if err == nil && createdType == "TEXT" {
-		// Old DB with TEXT created - migrate to INTEGER
 		_, err = db.Exec(`
 			CREATE TABLE items_new(
 				id TEXT PRIMARY KEY,
@@ -108,35 +104,59 @@ func migrate(db *sql.DB) error {
 				sha256 TEXT NOT NULL,
 				origin TEXT NOT NULL,
 				created INTEGER NOT NULL,
-				inline BLOB,
-				blob_path TEXT NOT NULL DEFAULT ''
+				inline BLOB
 			);
 		`)
 		if err != nil {
 			return fmt.Errorf("migrate create new: %w", err)
 		}
-		rows, err := db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items`)
+		rows, err := db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline FROM items`)
 		if err != nil {
-			return fmt.Errorf("migrate select old: %w", err)
-		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var id, kind, mime, name, sha256, origin, createdStr, blobPath string
-			var size int64
-			var inline []byte
-			if err := rows.Scan(&id, &kind, &mime, &name, &size, &sha256, &origin, &createdStr, &inline, &blobPath); err != nil {
-				return err
-			}
-			var createdInt int64
-			if t, err := time.Parse(time.RFC3339Nano, createdStr); err == nil {
-				createdInt = t.UnixNano()
-			} else if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
-				createdInt = t.UnixNano()
-			}
-			_, err = db.Exec(`INSERT INTO items_new(id, kind, mime, name, size, sha256, origin, created, inline, blob_path) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-				id, kind, mime, name, size, sha256, origin, createdInt, inline, blobPath)
+			// Try old schema with blob_path for backwards compat
+			rows, err = db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items`)
 			if err != nil {
-				return err
+				return fmt.Errorf("migrate select old: %w", err)
+			}
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var id, kind, mime, name, sha256, origin, createdStr, blobPath string
+				var size int64
+				var inline []byte
+				if err := rows.Scan(&id, &kind, &mime, &name, &size, &sha256, &origin, &createdStr, &inline, &blobPath); err != nil {
+					return err
+				}
+				var createdInt int64
+				if t, err := time.Parse(time.RFC3339Nano, createdStr); err == nil {
+					createdInt = t.UnixNano()
+				} else if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
+					createdInt = t.UnixNano()
+				}
+				_, err = db.Exec(`INSERT INTO items_new(id, kind, mime, name, size, sha256, origin, created, inline) VALUES(?,?,?,?,?,?,?,?,?)`,
+					id, kind, mime, name, size, sha256, origin, createdInt, inline)
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var id, kind, mime, name, sha256, origin, createdStr string
+				var size int64
+				var inline []byte
+				if err := rows.Scan(&id, &kind, &mime, &name, &size, &sha256, &origin, &createdStr, &inline); err != nil {
+					return err
+				}
+				var createdInt int64
+				if t, err := time.Parse(time.RFC3339Nano, createdStr); err == nil {
+					createdInt = t.UnixNano()
+				} else if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
+					createdInt = t.UnixNano()
+				}
+				_, err = db.Exec(`INSERT INTO items_new(id, kind, mime, name, size, sha256, origin, created, inline) VALUES(?,?,?,?,?,?,?,?,?)`,
+					id, kind, mime, name, size, sha256, origin, createdInt, inline)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := db.Exec(`DROP TABLE items`); err != nil {
@@ -152,6 +172,8 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	// Drop old blob_path column if it still exists (YYP-068)
+	_, _ = db.Exec(`ALTER TABLE items DROP COLUMN blob_path`)
 	return nil
 }
 
@@ -166,23 +188,23 @@ func Close(s *Store) error {
 // Put inserts item idempotently.
 func (s *Store) Put(it Item) error {
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO items(id, kind, mime, name, size, sha256, origin, created, inline, blob_path)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		it.ID, it.Kind, it.Mime, it.Name, it.Size, it.SHA256, it.Origin, it.Created.UnixNano(), it.Inline, it.BlobPath,
+		INSERT OR IGNORE INTO items(id, kind, mime, name, size, sha256, origin, created, inline)
+		VALUES(?,?,?,?,?,?,?,?,?)`,
+		it.ID, it.Kind, it.Mime, it.Name, it.Size, it.SHA256, it.Origin, it.Created.UnixNano(), it.Inline,
 	)
 	if err != nil {
 		return fmt.Errorf("store put %s: %w", it.ID, err)
 	}
 	s.putCount++
 	if s.putCount%10 == 0 {
-		_ = s.EnforceRetention(500, 2*1024*1024*1024)
+		_ = s.EnforceRetention(500)
 	}
 	return nil
 }
 
 // Recent returns newest n items.
 func (s *Store) Recent(n int) ([]Item, error) {
-	rows, err := s.db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items ORDER BY created DESC LIMIT ?`, n)
+	rows, err := s.db.Query(`SELECT id, kind, mime, name, size, sha256, origin, created, inline FROM items ORDER BY created DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, fmt.Errorf("recent query: %w", err)
 	}
@@ -191,7 +213,7 @@ func (s *Store) Recent(n int) ([]Item, error) {
 	for rows.Next() {
 		var it Item
 		var createdNs int64
-		if err := rows.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
+		if err := rows.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline); err != nil {
 			return nil, err
 		}
 		it.Created = time.Unix(0, createdNs)
@@ -202,10 +224,10 @@ func (s *Store) Recent(n int) ([]Item, error) {
 
 // BySHA finds item by sha256 for dedupe.
 func (s *Store) BySHA(sha string) (Item, bool, error) {
-	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items WHERE sha256 = ? LIMIT 1`, sha)
+	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline FROM items WHERE sha256 = ? LIMIT 1`, sha)
 	var it Item
 	var createdNs int64
-	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
+	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline); err != nil {
 		if err == sql.ErrNoRows {
 			return Item{}, false, nil
 		}
@@ -217,10 +239,10 @@ func (s *Store) BySHA(sha string) (Item, bool, error) {
 
 // Get returns item by id.
 func (s *Store) Get(id string) (Item, bool, error) {
-	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline, blob_path FROM items WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, kind, mime, name, size, sha256, origin, created, inline FROM items WHERE id = ?`, id)
 	var it Item
 	var createdNs int64
-	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline, &it.BlobPath); err != nil {
+	if err := row.Scan(&it.ID, &it.Kind, &it.Mime, &it.Name, &it.Size, &it.SHA256, &it.Origin, &createdNs, &it.Inline); err != nil {
 		if err == sql.ErrNoRows {
 			return Item{}, false, nil
 		}
@@ -237,11 +259,6 @@ func (s *Store) Count() (int, error) {
 		return 0, err
 	}
 	return n, nil
-}
-
-// BlobDir returns directory for blobs.
-func (s *Store) BlobDir() string {
-	return filepath.Join(s.dir, "blobs")
 }
 
 // --- settings ---
@@ -325,66 +342,31 @@ func (s *Store) CountOutbox() (int, error) {
 	return n, nil
 }
 
-// UpdateBlobPath sets blob_path for item.
-func (s *Store) UpdateBlobPath(id, path string) error {
-	_, err := s.db.Exec(`UPDATE items SET blob_path = ? WHERE id = ?`, path, id)
-	return err
-}
-
-// EnforceRetention evicts oldest items beyond limits (500 items / 2GB).
-func (s *Store) EnforceRetention(maxItems int, maxBytes int64) error {
+// EnforceRetention evicts oldest items beyond the count limit (YYP-068: no blobs, count only).
+func (s *Store) EnforceRetention(maxItems int) error {
 	if maxItems <= 0 {
 		maxItems = 500
-	}
-	if maxBytes <= 0 {
-		maxBytes = 2 * 1024 * 1024 * 1024
 	}
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&count); err != nil {
 		return err
 	}
-	var total sql.NullInt64
-	if err := s.db.QueryRow(`SELECT SUM(size) FROM items`).Scan(&total); err != nil {
-		return err
-	}
-	totalBytes := int64(0)
-	if total.Valid {
-		totalBytes = total.Int64
-	}
-	if count <= maxItems && totalBytes <= maxBytes {
+	if count <= maxItems {
 		return nil
 	}
-	rows, err := s.db.Query(`SELECT id, size, blob_path FROM items ORDER BY created ASC`)
+	rows, err := s.db.Query(`SELECT id FROM items ORDER BY created ASC LIMIT ?`, count-maxItems)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
-	type entry struct {
-		id       string
-		size     int64
-		blobPath string
-	}
-	var entries []entry
 	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.id, &e.size, &e.blobPath); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		entries = append(entries, e)
-	}
-	for _, e := range entries {
-		if count <= maxItems && totalBytes <= maxBytes {
-			break
-		}
-		if _, err := s.db.Exec(`DELETE FROM items WHERE id = ?`, e.id); err != nil {
+		if _, err := s.db.Exec(`DELETE FROM items WHERE id = ?`, id); err != nil {
 			return err
 		}
-		if e.blobPath != "" {
-			_ = os.Remove(e.blobPath)
-			_ = os.Remove(e.blobPath + ".part")
-		}
-		count--
-		totalBytes -= e.size
 	}
-	return nil
+	return rows.Err()
 }

@@ -13,9 +13,9 @@ Clipboard sync for your tailnet. One static binary per device, plain HTTP over W
 
 ## Features
 
-- Text and file clipboard sync between macOS, Windows, and iOS
+- Text clipboard sync between macOS, Windows, and iOS — file transfer removed per YYP-068 (scope is clipboard only)
 - End-to-end encrypted via Tailscale WireGuard — data never leaves your tailnet
-- Offline queue with auto-resume for large files
+- Offline queue for text announcements
 - Clipboard history with quick re-copy
 - System tray + local web UI
 

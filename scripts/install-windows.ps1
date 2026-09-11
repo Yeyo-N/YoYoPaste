@@ -57,11 +57,14 @@ New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 
 # YYP-066: stop existing task before overwriting the running exe (Windows locks it)
 $taskNameTmp = "YoYoPaste"
-try { schtasks /end /tn $taskNameTmp 2>$null | Out-Null } catch {}
+schtasks /end /tn $taskNameTmp
 Start-Sleep -Seconds 1
 for ($i=0; $i -lt 5; $i++) {
   if (-not (Get-Process -Name "yoyopasted" -ErrorAction SilentlyContinue)) { break }
   Start-Sleep -Seconds 1
+}
+if (Get-Process -Name "yoyopasted" -ErrorAction SilentlyContinue) {
+  Fail "yoyopasted is still running after schtasks /end; aborting copy to avoid half-applied state. Try manually: schtasks /end /tn YoYoPaste; schtasks /delete /tn YoYoPaste /f"
 }
 Copy-Item -Force $BinaryPath $destBin
 Unblock-File -Path $destBin

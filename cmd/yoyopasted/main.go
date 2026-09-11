@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 )
 
 var verbose = flag.Bool("v", false, "verbose logging")
+var logFile = flag.String("log-file", "", "log file (default stderr) for clip.Set visibility (YYP-070)")
 
 func main() {
 	flag.Parse()
@@ -26,7 +28,17 @@ func main() {
 	if *verbose {
 		level = slog.LevelDebug
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	var w = os.Stderr
+	if *logFile != "" {
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err == nil {
+			defer f.Close()
+			w = f
+		} else {
+			fmt.Fprintf(os.Stderr, "open log file: %v\n", err)
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

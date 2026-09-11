@@ -1449,6 +1449,119 @@ bug YYP-063 was.
 
 ---
 
+# Phase 4.1 — clip.Set is broken on Windows (2026-09-11)
+
+The `-log-file` flag from YYP-070 paid for itself on first use.
+
+### YYP-071 · `clip.Set` fails on Windows — Mac → Windows paste does not work
+**P0 · M · Ready · deps: none · skills: Go, Win32**
+
+With the daemon running under `-log-file`, copying on the Mac produces on `vista`:
+
+```
+level=ERROR msg="clip set" err="open clipboard failed"
+```
+
+The item reaches vista's history, so delivery and auth are fine. But
+`clip.Set` fails, so **the Windows clipboard is never written** — copy on the Mac,
+paste on Windows does not work. Only Windows → Mac works today.
+
+Three defects in `internal/clip/clip_windows.go:set`:
+
+1. **`OpenClipboard` is called once with no retry** (`:95`). On Windows the
+   clipboard is a single global resource and `OpenClipboard` routinely fails with
+   `ERROR_ACCESS_DENIED` when any other process holds it open — a browser, an
+   Office app, a password manager. Retrying a handful of times over ~100 ms is the
+   standard remedy and is what every working implementation does. This is the
+   observed failure.
+2. **`suppress.Store(true)` happens before every early return.** When `set`
+   fails, `suppress` stays `true`, so the watcher swallows the *next genuine local
+   copy* on that machine. A failed `Set` silently eats one real clipboard change.
+   Set it only on the success path, or clear it on every error return.
+3. **The errno is discarded.** All three `Call` returns are `_`, so a generic
+   "open clipboard failed" replaces the actual `ERROR_ACCESS_DENIED`. Capture the
+   third return and wrap it — that alone would have named this bug immediately.
+
+Also worth fixing while in here: `dst := (*[1 << 20]uint16)(unsafe.Pointer(ptr))`
+is a fixed 1 MiB window that would go out of bounds on larger text. The 64 KiB
+body cap bounds it in practice, but `unsafe.Slice` is the correct form.
+
+**Acceptance** Copy on the Mac, paste in Notepad on `vista`. Retry path covered
+by a test that fails `OpenClipboard` once then succeeds. Confirm `suppress` is
+false after a failed `set`.
+**Ponytail** A retry loop and moving one `Store` call. Do not add a clipboard
+library.
+
+---
+
+### YYP-072 · The installer does not pass `-log-file`
+**P1 · S · Ready · deps: none · skills: PowerShell**
+
+YYP-070 added the flag to make `clip.Set` failures visible, but
+`install-windows.ps1` still registers `"...yoyopasted.exe" -v` with no log
+destination. In the deployed configuration the failure in YYP-071 is still
+invisible — I had to register a separate task by hand to see it.
+
+**Fix** Register with `-log-file C:\ProgramData\YoYoPaste\yoyopasted.log`, and
+cap or rotate it so it cannot grow without bound.
+**Acceptance** A fresh install writes a log, and the log shows a `clip set`
+failure when one occurs.
+
+---
+
+### YYP-073 · Remove the unshipped schema back-compat
+**P2 · S · Ready · deps: none · skills: Go**
+
+YYP-068 added ~30 lines to `internal/store/store.go:113-138` that read the *old*
+`blob_path` schema and duplicate the whole row-copy loop for it, plus
+`ALTER TABLE items DROP COLUMN blob_path`.
+
+There has never been a release — YYP-022's pipeline has never run and no tag has
+been pushed — so no user has a database with that column. The only two databases
+in existence are on this Mac and `vista`, both disposable dev data. This is
+speculative back-compat, and it duplicates a 25-line loop to serve zero users.
+
+**Fix** Delete the old-schema branch and its duplicated loop. Keep the one-line
+`DROP COLUMN`; it is harmless and covers the two dev machines.
+Also fix `internal/store/doc.go:1`, which still says "and blobs on disk".
+**Ponytail** Net-negative. Add the migration when there is a released version to
+migrate from.
+
+---
+
+### YYP-067 · iOS — reopened, the project file is empty
+**P1 · L · Ready · deps: none · skills: Swift, Xcode**
+
+`ios/YoYoPaste.xcodeproj/project.pbxproj` is 9 lines with `objects = { }` — no
+project, no target, no file references. Xcode cannot open it and the `xcodebuild`
+command in `ios/README.md` cannot run. There is also no app entry point
+(`@main`), no `Info.plist`, and still no `YoYoPasteShare` extension.
+
+A stub with a project file's name is worse than no project: it reads as buildable.
+Either generate a real project (create it in Xcode and commit the result) or
+remove the `.xcodeproj` and say plainly in `ios/README.md` that the project has
+yet to be created.
+
+**Note** Xcode is not installed on this Mac — only Command Line Tools — so this
+cannot be built or verified here at all. Say so in `ios/README.md` rather than
+documenting a command that has never been run.
+
+---
+
+### Verified this round
+- **YYP-066 Done** — two consecutive installer runs against a *running* daemon
+  both succeeded, exe timestamp advanced to 2026-09-11 08:24:54, daemon back up
+  and reachable from the Mac. The fix was removing the swallowing `try/catch`.
+- **YYP-068 Done** — `pull.go`, `pull_test.go`, `blob_test.go` deleted, blob
+  endpoints and `BlobPath` gone, retention is count-only. Net **−378 lines**.
+  Tests green, `GOOS=windows` build clean.
+- **YYP-069 Done** — README and success criteria scoped to clipboard.
+- **YYP-070 Partly** — the flag works and immediately found YYP-071, but it is
+  not wired into the installer (YYP-072), and the Windows paste it was meant to
+  confirm turns out to be broken.
+
+---
+
 # Phase 6+ — Polish and optimization (not yet broken down)
 
 | ID | Task | P | Cx |

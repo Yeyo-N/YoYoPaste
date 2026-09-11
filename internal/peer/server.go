@@ -36,8 +36,6 @@ func New(st *store.Store, version string) *Server {
 	mux.HandleFunc("GET /v0/peers", s.handlePeers)
 	mux.HandleFunc("POST /v0/clip", s.handleClip)
 	mux.HandleFunc("GET /v0/events", s.handleEvents)
-	mux.HandleFunc("GET /v0/blob/{id}", s.handleBlob)
-	mux.HandleFunc("HEAD /v0/blob/{id}", s.handleBlobHead)
 	s.mux = mux
 	return s
 }
@@ -249,53 +247,3 @@ func (s *Server) Subscribe() chan store.Item { return s.hub.subscribe() }
 
 // Unsubscribe removes channel.
 func (s *Server) Unsubscribe(ch chan store.Item) { s.hub.unsubscribe(ch) }
-
-func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if id != cleanID(id) {
-		http.NotFound(w, r)
-		return
-	}
-	it, ok, err := s.store.Get(id)
-	if err != nil {
-		http.Error(w, "store error", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	if it.BlobPath == "" {
-		http.NotFound(w, r)
-		return
-	}
-	f, err := os.Open(it.BlobPath)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	// http.ServeContent handles Range, HEAD, Content-Type
-	http.ServeContent(w, r, it.Name, it.Created, f)
-}
-
-func (s *Server) handleBlobHead(w http.ResponseWriter, r *http.Request) {
-	s.handleBlob(w, r)
-}
-
-func cleanID(id string) string {
-	// Very strict: alnum + - _ only
-	for _, c := range id {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' {
-			return ""
-		}
-	}
-	if id == "" {
-		return ""
-	}
-	return id
-}
